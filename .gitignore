@@ -1,0 +1,16 @@
+__pycache__/
+*.pyc
+
+# Generated/debug images
+debug_*.png
+test_output.png
+
+# Generated outputs
+plan/output/
+seg_output/
+room_designs/ai_generated/
+room_designs/screenshots/
+
+# OS/editor files
+.DS_Store
+Thumbs.db
