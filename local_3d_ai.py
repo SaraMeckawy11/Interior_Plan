@@ -83,12 +83,73 @@ def _room_asset_keys(room_type: str) -> tuple[str, ...]:
     return ()
 
 
-def _asset_folder(style: str, asset_key: str) -> Path:
-    return ASSET_ROOT / _slug(style) / asset_key
+def preference_key(config) -> str:
+    """Stable cache key for the user's complete coordinated design direction."""
+    config = config or {}
+    style = config.get("style", "Modern")
+    direction = {
+        "style": style,
+        "profile": config.get("design_profile", "Curated"),
+        "color_mood": config.get("color_mood", "Warm neutral"),
+        "design_notes": str(config.get("design_notes", "")).strip().lower(),
+        "floor_finish": config.get("floor_finish", "Auto by style"),
+        "wall_finish": config.get("wall_finish", "Auto by style"),
+    }
+    signature = hashlib.sha1(
+        json.dumps(direction, sort_keys=True).encode("utf-8")
+    ).hexdigest()[:12]
+    return f"{_slug(style)}_{signature}"
 
 
-def asset_path(style: str, asset_key: str) -> Path:
-    return _asset_folder(style, asset_key) / "mesh.glb"
+def _uses_default_direction(config) -> bool:
+    config = config or {}
+    return (
+        config.get("design_profile", "Curated") == "Curated"
+        and config.get("color_mood", "Warm neutral") == "Warm neutral"
+        and not str(config.get("design_notes", "")).strip()
+        and config.get("floor_finish", "Auto by style") == "Auto by style"
+        and config.get("wall_finish", "Auto by style") == "Auto by style"
+    )
+
+
+def _asset_folder(style: str, asset_key: str, design_key: str | None = None) -> Path:
+    style_root = ASSET_ROOT / _slug(style)
+    if design_key:
+        return style_root / design_key / asset_key
+    return style_root / asset_key
+
+
+def asset_path(style: str, asset_key: str, design_key: str | None = None) -> Path:
+    return _asset_folder(style, asset_key, design_key) / "mesh.glb"
+
+
+def _resolved_asset_path(
+    style: str,
+    asset_key: str,
+    design_key: str | None = None,
+) -> Path | None:
+    """Return a cached mesh, including assets made by older design-key runs."""
+    if design_key:
+        exact = asset_path(style, asset_key, design_key)
+        if exact.is_file() and exact.stat().st_size > 10_000:
+            return exact
+
+    canonical = asset_path(style, asset_key)
+    if canonical.is_file() and canonical.stat().st_size > 10_000:
+        return canonical
+
+    style_root = ASSET_ROOT / _slug(style)
+    candidates = []
+    if style_root.is_dir():
+        for candidate in style_root.glob(f"*/{asset_key}/mesh.glb"):
+            try:
+                if candidate.stat().st_size > 10_000:
+                    candidates.append(candidate)
+            except OSError:
+                continue
+    if not candidates:
+        return None
+    return max(candidates, key=lambda path: path.stat().st_mtime)
 
 
 def runtime_status() -> tuple[bool, str]:
@@ -103,7 +164,33 @@ def runtime_status() -> tuple[bool, str]:
     checkpoint = TRIPOSR_MODEL / "model.ckpt"
     if not checkpoint.is_file() or checkpoint.stat().st_size < 1_000_000_000:
         return False, "The one-time TripoSR model download is not complete."
-    return True, "Local FLUX + TripoSR is ready."
+
+    site_packages = TRIPOSR_PYTHON.parents[1] / "Lib" / "site-packages"
+    package_roots = [site_packages]
+    if site_packages.is_dir():
+        for pth_file in site_packages.glob("*.pth"):
+            try:
+                for line in pth_file.read_text(encoding="utf-8").splitlines():
+                    extra = Path(line.strip())
+                    if extra.is_dir():
+                        package_roots.append(extra)
+            except (OSError, UnicodeError):
+                continue
+
+    required_modules = (
+        ("torch", "torch"),
+        ("numpy", "numpy"),
+        ("Pillow", "PIL"),
+        ("transformers", "transformers"),
+        ("trimesh", "trimesh"),
+    )
+    missing = [
+        label for label, module in required_modules
+        if not any((root / module).exists() for root in package_roots)
+    ]
+    if missing:
+        return False, "TripoSR runtime repair needed: missing " + ", ".join(missing) + "."
+    return True, "Local TripoSR furniture generation is ready."
 
 
 def _requested_jobs(room_configs):
@@ -111,21 +198,34 @@ def _requested_jobs(room_configs):
     for config in room_configs or []:
         style = config.get("style", "Modern")
         profile = config.get("design_profile", "Curated")
+        design_key = preference_key(config)
+        color_mood = config.get("color_mood", "Warm neutral")
+        design_notes = str(config.get("design_notes", "")).strip()
+        floor_finish = config.get("floor_finish", "Auto by style")
+        wall_finish = config.get("wall_finish", "Auto by style")
         for asset_key in _room_asset_keys(config.get("room_type", "")):
-            final_path = asset_path(style, asset_key)
+            final_path = asset_path(style, asset_key, design_key)
             if final_path.is_file() and final_path.stat().st_size > 10_000:
                 continue
+            legacy_path = asset_path(style, asset_key)
+            if (_uses_default_direction(config) and legacy_path.is_file()
+                    and legacy_path.stat().st_size > 10_000):
+                continue
             description, _height = ASSET_SPECS[asset_key]
-            ref_key = f"{_slug(style)}__{asset_key}"
+            ref_key = f"{design_key}__{asset_key}"
             jobs[ref_key] = {
                 "key": ref_key,
                 "style": style,
                 "profile": profile,
+                "design_key": design_key,
                 "asset_key": asset_key,
                 "prompt": (
                     f"{description}, designed in a cohesive {style} interior style, "
                     f"{profile.lower()} level of visual detail, premium believable "
-                    "materials and construction"
+                    f"materials and construction, {color_mood.lower()} color direction, "
+                    f"coordinated with {floor_finish.lower()} flooring and "
+                    f"{wall_finish.lower()} walls"
+                    + (f", respecting this client brief: {design_notes}" if design_notes else "")
                 ),
             }
     return list(jobs.values())
@@ -184,26 +284,41 @@ def prepare_local_assets(room_configs, progress=None):
     env["TRANSFORMERS_OFFLINE"] = "1"
     env["TRIPOSR_DINO_CONFIG"] = str(TRIPOSR_MODEL / "dino_config.json")
     creationflags = subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0
-    subprocess.run(
-        command,
-        cwd=str(ROOT),
-        env=env,
-        check=True,
-        creationflags=creationflags,
-    )
+    try:
+        subprocess.run(
+            command,
+            cwd=str(ROOT),
+            env=env,
+            check=True,
+            capture_output=True,
+            text=True,
+            creationflags=creationflags,
+        )
+    except subprocess.CalledProcessError as exc:
+        detail = (exc.stderr or exc.stdout or "").strip()
+        if detail:
+            detail = detail[-1200:]
+        else:
+            detail = "The local conversion process exited before producing a mesh."
+        raise Local3DError(
+            "TripoSR could not generate the selected furniture.\n\n" + detail
+        ) from exc
 
     generated = 0
     for index, job in enumerate(jobs):
         source = run_dir / str(index) / "mesh.glb"
         if not source.is_file():
             raise Local3DError(f"TripoSR did not produce {job['asset_key']}.")
-        destination = asset_path(job["style"], job["asset_key"])
+        destination = asset_path(
+            job["style"], job["asset_key"], job["design_key"]
+        )
         destination.parent.mkdir(parents=True, exist_ok=True)
         shutil.copy2(source, destination)
         metadata = {
             "asset": job["asset_key"],
             "style": job["style"],
             "profile": job["profile"],
+            "design_key": job["design_key"],
             "source_reference": str(Path(image_paths[index]).relative_to(ROOT)),
             "generator": "FLUX.2-klein-4B + TripoSR",
         }
@@ -219,10 +334,10 @@ def prepare_local_assets(room_configs, progress=None):
 _MESH_CACHE = {}
 
 
-def load_asset_mesh(asset_key, style, width, depth, height=None):
+def load_asset_mesh(asset_key, style, width, depth, height=None, design_key=None):
     """Load and normalize a generated GLB to the requested real-world size."""
-    path = asset_path(style, asset_key)
-    if not path.is_file():
+    path = _resolved_asset_path(style, asset_key, design_key)
+    if path is None:
         return None
     height = float(height or ASSET_SPECS.get(asset_key, ("", 1.0))[1])
     cache_key = (str(path), round(width, 3), round(depth, 3), round(height, 3))

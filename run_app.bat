@@ -14,6 +14,14 @@ if exist "hf_cache\venv\Scripts\python.exe" (
   "hf_cache\venv\Scripts\python.exe" plan2.py
   goto done
 )
+if exist "C:\Sara\Interior_design\hf_cache\venv\Scripts\python.exe" (
+  "C:\Sara\Interior_design\hf_cache\venv\Scripts\python.exe" plan2.py
+  goto done
+)
+if exist ".triposr_venv\Scripts\python.exe" (
+  ".triposr_venv\Scripts\python.exe" plan2.py
+  goto done
+)
 if exist "C:\SIA\Interior_design\hf_cache\venv\Scripts\python.exe" (
   "C:\SIA\Interior_design\hf_cache\venv\Scripts\python.exe" plan2.py
   goto done

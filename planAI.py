@@ -26,7 +26,7 @@ import re
 # Reuse the model snapshot already downloaded by the sibling Gen_klein project
 # when it is present, otherwise keep a repo-local git-ignored cache. Either way
 # HF_HOME points inside a cache folder so runs are reproducible offline.
-_SIBLING_DIR = r"C:\SIA\Interior_design\hf_cache"
+_SIBLING_DIR = r"C:\Sara\Interior_design\hf_cache"
 _LOCAL_CACHE = os.path.join(os.path.dirname(__file__), "hf_cache")
 os.environ.setdefault(
     "HF_HOME",
