@@ -1,0 +1,8 @@
+{
+  "python.terminal.activateEnvironment": true,
+  "code-runner.executorMap": {
+    "python": "python -u"
+  },
+  "code-runner.runInTerminal": true,
+  "code-runner.fileDirectoryAsCwd": true
+}

@@ -1,620 +1,708 @@
 """
-AI Interior Design Generator using Stable Diffusion with ControlNet (Canny) + Img2Img
+AI Interior Design Generator using FLUX.2 [klein] 4B (Black Forest Labs).
 
-Uses img2img so the AI STARTS from the actual 3D screenshot, naturally preserving
-door/window positions. Canny ControlNet provides additional edge guidance for
-wall structure.
+Replaces the old Stable-Diffusion + ControlNet pipeline with the same local,
+offline FLUX.2-klein-4B image-editing model used in Gen_klein.py. The model
+takes the actual 3D screenshot as its input image and redesigns it into a
+furnished room while keeping the photo's geometry (walls, windows, doors),
+so we no longer need Canny / depth / seg ControlNets to hold the layout.
 
-Key insight: txt2img + Canny can't preserve doors because edge lines alone don't
-tell the AI what a door looks like. Img2img lets the AI SEE the actual room and
-transform it into a furnished version while keeping the layout intact.
+Memory strategy (this machine has a 6 GB RTX 3050, so both models never sit
+on the GPU together):
+  stage 1: Qwen3 text encoder 4-bit on GPU -> encode every room prompt -> free
+  stage 2: transformer 4-bit + VAE on GPU -> denoise each room with the embeds
+Weights quantize shard-by-shard straight onto the GPU (never fp32 in RAM).
+
+The public entry point `generate_furnished_plan(...)` keeps the exact same
+signature and return shape as before, so plan2.py needs no changes (though it
+now also forwards the chosen design style).
 """
 
+import gc
+import glob
 import os
-import cv2
+import re
+
+# Reuse the model snapshot already downloaded by the sibling Gen_klein project
+# when it is present, otherwise keep a repo-local git-ignored cache. Either way
+# HF_HOME points inside a cache folder so runs are reproducible offline.
+_SIBLING_DIR = r"C:\SIA\Interior_design\hf_cache"
+_LOCAL_CACHE = os.path.join(os.path.dirname(__file__), "hf_cache")
+os.environ.setdefault(
+    "HF_HOME",
+    os.path.join(
+        _SIBLING_DIR if os.path.isdir(_SIBLING_DIR) else _LOCAL_CACHE,
+        "huggingface",
+    ),
+)
+# Plain-HTTPS downloads (the default Xet backend stalled on this network).
+os.environ.setdefault("HF_HUB_DISABLE_XET", "1")
+
+import threading
+
 import numpy as np
 import torch
 from PIL import Image
-from diffusers import (
-    StableDiffusionControlNetImg2ImgPipeline,
-    ControlNetModel,
-    UniPCMultistepScheduler
-)
+
+# Import the diffusers/transformers symbols eagerly, at module load, while we
+# are still single-threaded. diffusers uses a lazy (_LazyModule) import system
+# that is NOT thread-safe: if several worker threads trigger the first-ever
+# `from diffusers import Flux2KleinPipeline` at the same moment, one of them can
+# lose the race and raise a bogus "cannot import name" error. Resolving the
+# names here once removes that race entirely.
+from diffusers import BitsAndBytesConfig as DiffusersBnb4bit
+from diffusers import Flux2KleinPipeline, Flux2Transformer2DModel
+from transformers import AutoModelForCausalLM, AutoTokenizer
+from transformers import BitsAndBytesConfig as TransformersBnb4bit
+
+# Only one generation may touch the GPU at a time. The desktop app can queue
+# several rooms at once (e.g. rapid screenshots), and this 6 GB GPU cannot hold
+# even two model loads simultaneously — so serialize them.
+_GEN_LOCK = threading.Lock()
 
 # ===========================================================
 # CONFIG
 # ===========================================================
 
-DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
-print(f"[AI] Using device: {DEVICE}")
+MODEL_ID = "black-forest-labs/FLUX.2-klein-4B"  # Apache 2.0, commercial OK
+# klein is step-distilled: 4 steps is the intended operating point (~10 s on a
+# 4060). guidance_scale is ignored by the distilled model (keep it at 1.0).
+STEPS = 4
+GUIDANCE = 1.0
+SEED = 7
 
-MODEL_SD = "Lykon/dreamshaper-8"
-MODEL_CANNY = "lllyasviel/control_v11p_sd15_canny"
-MODEL_DEPTH = "lllyasviel/control_v11f1p_sd15_depth"
-MODEL_SEG = "lllyasviel/control_v11p_sd15_seg"
+if not torch.cuda.is_available():
+    print("[AI] WARNING: no CUDA GPU found — FLUX.2-klein 4-bit needs a GPU.")
 
-# ===========================================================
-# LAZY MODEL LOADING
-# ===========================================================
+# Candidate locations for the ~15 GB local snapshot (sibling project first).
+_MODEL_DIR_CANDIDATES = [
+    os.path.join(_SIBLING_DIR, "models", "FLUX.2-klein-4B"),
+    os.path.join(_LOCAL_CACHE, "models", "FLUX.2-klein-4B"),
+]
 
-_models = {
-    "pipe": None,
-    "loaded": False
+# Files that must all exist for a snapshot to count as "complete" (so we skip
+# the download entirely and load straight from disk).
+_REQUIRED_FILES = [
+    "model_index.json",
+    "scheduler/scheduler_config.json",
+    "tokenizer/tokenizer.json",
+    "tokenizer/tokenizer_config.json",
+    "text_encoder/config.json",
+    "text_encoder/model.safetensors.index.json",
+    "transformer/config.json",
+    "vae/config.json",
+]
+_WEIGHT_SIZES = {
+    "text_encoder/model-00001-of-00002.safetensors": 4_967_215_360,
+    "text_encoder/model-00002-of-00002.safetensors": 3_077_766_632,
+    "transformer/diffusion_pytorch_model.safetensors": 7_751_109_744,
+    "vae/diffusion_pytorch_model.safetensors": 168_120_878,
 }
 
-def load_models():
-    """Load 3 ControlNets + Stable Diffusion Img2Img pipeline (called once)"""
-    global _models
 
-    if _models["loaded"]:
-        return
+def _snapshot_complete(model_dir):
+    """True if every required config + weight file is present at full size."""
+    files_ok = all(
+        os.path.isfile(os.path.join(model_dir, rel)) for rel in _REQUIRED_FILES
+    )
+    weights_ok = all(
+        os.path.isfile(os.path.join(model_dir, rel))
+        and os.path.getsize(os.path.join(model_dir, rel)) == size
+        for rel, size in _WEIGHT_SIZES.items()
+    )
+    return files_ok and weights_ok
 
-    from transformers import pipeline
 
-    print("[AI] Loading ControlNet models (Canny, Depth, Seg)...")
-    controlnet_canny = ControlNetModel.from_pretrained(MODEL_CANNY, torch_dtype=torch.float16)
-    controlnet_depth = ControlNetModel.from_pretrained(MODEL_DEPTH, torch_dtype=torch.float16)
-    controlnet_seg = ControlNetModel.from_pretrained(MODEL_SEG, torch_dtype=torch.float16)
+def _resolve_model_dir():
+    """Return a local model folder, reusing a complete snapshot or downloading."""
+    for candidate in _MODEL_DIR_CANDIDATES:
+        if _snapshot_complete(candidate):
+            print(f"[AI] Using complete local model snapshot: {candidate}")
+            return candidate
 
-    print("[AI] Loading Stable Diffusion Img2Img + ControlNet pipeline...")
-    _models["pipe"] = StableDiffusionControlNetImg2ImgPipeline.from_pretrained(
-        MODEL_SD,
-        controlnet=[controlnet_canny, controlnet_depth, controlnet_seg],
-        torch_dtype=torch.float16,
-        safety_checker=None
-    ).to(DEVICE)
-    
-    _models["pipe"].scheduler = UniPCMultistepScheduler.from_config(_models["pipe"].scheduler.config)
-    
-    print("[AI] Loading Depth Estimator...")
-    try:
-        _models["depth_estimator"] = pipeline("depth-estimation", model="Intel/dpt-large")
-    except Exception as e:
-        print(f"[AI] Warning: Depth estimator failed to load: {e}")
-        _models["depth_estimator"] = None
+    # Nothing complete on disk: download into the repo-local cache (resumable).
+    from huggingface_hub import snapshot_download
 
-    _models["loaded"] = True
-    print("[AI] All models loaded successfully!")
+    target = os.path.join(_LOCAL_CACHE, "models", "FLUX.2-klein-4B")
+    print("[AI] Downloading FLUX.2-klein-4B (resumable, ~15 GB first run)...")
+    local_dir = snapshot_download(
+        MODEL_ID,
+        local_dir=target,
+        allow_patterns=[
+            "model_index.json", "scheduler/*", "tokenizer/*",
+            "text_encoder/*", "transformer/*", "vae/*",
+        ],
+    )
+    print(f"[AI] Download complete: {local_dir}")
+    return local_dir
+
 
 # ===========================================================
-# IMAGE PROCESSING
+# PROMPT SYSTEM (ported from Gen_klein.py)
+# ===========================================================
+# Models draw what you NAME, so each style defines its own shapes, materials,
+# floor, curtains, art, plants, lamp and textures.
+
+STYLE_SPECS = {
+    "modern": dict(
+        sofa="a sculptural curved sofa with a velvet back and boucle seat",
+        table="a round travertine pedestal coffee table",
+        floor="wide-plank warm honey oak laid straight",
+        rug="a LARGE chunky-woven jute rug",
+        curtains="cream double-layer drapery, sheer plus linen panels",
+        art="an oversized abstract artwork",
+        plants="tall olive trees in matte travertine planters",
+        lamp="a brass floor lamp with tapered fabric shade",
+        ceiling="ONE wide brass disc pendant close under the ceiling",
+        textures=("boucle, velvet, travertine, jute and warm oak, subtle "
+                  "brass; warm golden ambience"),
+    ),
+    "classic": dict(
+        sofa="a tailored roll-arm sofa with carved wooden legs",
+        table="a rectangular marble-top coffee table with carved legs",
+        floor="herringbone oak parquet",
+        rug="a LARGE bordered wool rug",
+        curtains="heavy pleated drapery with elegant tiebacks",
+        art="a large framed classical painting",
+        plants="sculpted plants in ceramic urns",
+        lamp="a column floor lamp with a pleated shade",
+        ceiling="ONE crystal chandelier on a short chain, close to the ceiling",
+        textures=("rich deeper accents; silk, velvet, marble and dark "
+                  "polished wood, antique gold details; stately warm mood"),
+    ),
+    "scandinavian": dict(
+        sofa="a clean-lined fabric sofa on tapered wooden legs",
+        table="a round pale-wood coffee table",
+        floor="pale matte oak boards",
+        rug="a LARGE soft wool rug",
+        curtains="airy white linen curtains",
+        art="simple framed line-art prints",
+        plants="a leafy plant in a simple white pot",
+        lamp="a minimalist tripod floor lamp",
+        ceiling="ONE small white dome pendant close to the ceiling",
+        textures=("muted tone-on-tone accents; wool, linen, pale birch and "
+                  "sheepskin, matte black details; bright airy calm"),
+    ),
+    "boho": dict(
+        sofa="a relaxed low sofa with layered patterned cushions",
+        table="a round carved-wood or rattan coffee table",
+        floor="warm rustic wood boards",
+        rug="LAYERED patterned rugs",
+        curtains="light flowing natural-cotton curtains",
+        art="an eclectic mix of woven and framed wall pieces",
+        plants="abundant potted and trailing plants in terracotta and baskets",
+        lamp="a woven rattan floor lamp",
+        ceiling="ONE woven rattan pendant close to the ceiling",
+        textures=("earthy playful accents; rattan, macrame, layered woven "
+                  "textiles, jute and terracotta; relaxed sunlit warmth"),
+    ),
+    "japandi": dict(
+        sofa="a low clean-lined sofa in natural linen",
+        table="a low round dark-wood coffee table",
+        floor="light matte wood boards",
+        rug="a LARGE flat-woven neutral rug",
+        curtains="plain linen panels",
+        art="one minimal ink-brush artwork",
+        plants="a single sculptural branch arrangement in a stone vessel",
+        lamp="a paper-lantern floor lamp",
+        ceiling="ONE round paper lantern close to the ceiling",
+        textures=("quiet deeper accents; linen, pale and dark wood, stone "
+                  "and paper, matte black; serene zen calm"),
+    ),
+    "industrial": dict(
+        sofa="a cognac leather sofa",
+        table="a rectangular reclaimed-wood and black steel coffee table",
+        floor="wide dark wood boards",
+        rug="a LARGE worn-look neutral rug",
+        curtains="simple dark linen panels",
+        art="large monochrome photography prints",
+        plants="a tall plant in a black metal planter",
+        lamp="a black tripod spotlight floor lamp",
+        ceiling="ONE black metal ceiling light close to the ceiling",
+        textures=("bold contrast accents; leather, black steel, reclaimed "
+                  "wood and aged brass; moody warm light"),
+    ),
+    "minimalist": dict(
+        sofa="a low straight-lined sofa in soft neutral fabric",
+        table="a low rectangular seamless coffee table",
+        floor="seamless pale oak boards",
+        rug="a LARGE plain low-pile rug",
+        curtains="plain full-height panels near the wall tone",
+        art="one single large calm artwork",
+        plants="one sculptural plant in a plain pot",
+        lamp="a slim unobtrusive floor lamp",
+        ceiling="ONE discreet flush ceiling light",
+        textures=("subtle tone-on-tone accents; smooth plaster, pale wood "
+                  "and soft matte fabric; serene uncluttered light"),
+    ),
+}
+
+# Map the gallery UI's style labels onto the STYLE_SPECS keys above.
+_STYLE_ALIASES = {
+    "modern minimalist": "minimalist",
+    "modern": "modern",
+    "contemporary": "modern",
+    "mid-century modern": "modern",
+    "mid century modern": "modern",
+    "scandinavian": "scandinavian",
+    "industrial": "industrial",
+    "bohemian": "boho",
+    "boho": "boho",
+    "traditional": "classic",
+    "classic": "classic",
+    "japandi": "japandi",
+    "minimalist": "minimalist",
+}
+
+FURNITURE_BY_ROOM = {
+    "living room": (
+        "{sofa}, two matching armchairs beside the sofa, {table}, and a media "
+        "console with a TV above it"
+    ),
+    "bedroom": (
+        "an upholstered bed with layered premium bedding, two nightstands with "
+        "warm lamps, and a bench at the foot of the bed"
+    ),
+    "dining room": (
+        "a solid-wood dining table with sculptural chairs and a styled sideboard"
+    ),
+    "kitchen": (
+        "fitted cabinetry with stone countertops, a breakfast counter with "
+        "designer stools, and integrated appliances"
+    ),
+    "home office": (
+        "a wide desk with a refined chair, full bookshelves, and a reading "
+        "armchair"
+    ),
+    "office": (
+        "a wide desk with a refined chair, full bookshelves, and a reading "
+        "armchair"
+    ),
+    "kids room": (
+        "a cozy bed with playful bedding, a study desk, a soft rug, and "
+        "generous storage"
+    ),
+    "bathroom": (
+        "a floating stone-top vanity with a backlit mirror, a glass shower, and "
+        "premium tile"
+    ),
+    "guest room": (
+        "an upholstered bed with layered bedding, a nightstand, a dresser with "
+        "a mirror, and a small seat"
+    ),
+    "studio": (
+        "a compact sofa, a bed zone, a small dining set and smart storage, "
+        "arranged into clear zones"
+    ),
+}
+
+DEFAULT_COLOR_TONE = "warm vanilla latte"
+
+
+def _style_spec(style_label):
+    """Resolve a UI style label to a STYLE_SPECS entry (with a graceful default)."""
+    key = _STYLE_ALIASES.get((style_label or "").lower().strip())
+    if key and key in STYLE_SPECS:
+        return STYLE_SPECS[key], key
+    # Unknown style: build a generic spec that names the style so the model
+    # still commits to it.
+    label = style_label or "modern"
+    return (
+        dict(
+            sofa=f"an authentic {label} statement sofa",
+            table=f"a coffee table in authentic {label} design",
+            floor=f"premium flooring true to {label} style",
+            rug="a LARGE area rug true to the style",
+            curtains="full-height drapery true to the style",
+            art="one large artwork matching the style",
+            plants="plants in style-matching pots",
+            lamp="a floor lamp matching the style",
+            ceiling="ONE style-matched ceiling light close to the ceiling",
+            textures=(f"deeper tone-on-tone accents; materials and textures "
+                      f"authentic to {label} style"),
+        ),
+        label,
+    )
+
+
+def build_prompt(room_type, style_label, color_tone=DEFAULT_COLOR_TONE,
+                 has_windows=True):
+    """Compose the FLUX.2-klein redesign prompt for one room."""
+    st, style_key = _style_spec(style_label)
+    room_key = (room_type or "living room").lower().strip()
+    furniture = FURNITURE_BY_ROOM.get(
+        room_key,
+        f"the essential furniture of a premium {room_type}, beautifully styled",
+    ).format(sofa=st["sofa"], table=st["table"])
+
+    # Only ask for curtains / a window wall when the room actually has windows;
+    # otherwise the model invents a window that the floor plan does not have.
+    if has_windows:
+        window_line = (
+            f"- Curtains: {st['curtains']}, from a recessed ceiling slot, NO "
+            "rod or gap, spanning the window wall to the floor.\n"
+        )
+    else:
+        window_line = (
+            "- This room has NO window: keep every wall solid, do not add, "
+            "paint or imply any window, glazing or curtain.\n"
+        )
+
+    prompt = (
+        f"Redesign this room as a {room_type} in {style_key} style.\n\n"
+        "HARD CONSTRAINTS:\n"
+        "- Keep the photo's GEOMETRY: every wall, window, door and ceiling "
+        "keeps its exact position, size, shape and SILL HEIGHT; never add, "
+        "remove, move, resize or convert any window or door; balcony doors "
+        "stay. Finishes MAY change; geometry may not.\n"
+        "- Keep the same camera position and angle.\n\n"
+        "DESIGN BRIEF - senior interior designer:\n"
+        "- Furnish if empty; else replace everything.\n"
+        f"- FULLY FINISH: {st['floor']} floor, smooth painted walls, clean "
+        "ceiling; no dust, stains or bare concrete.\n"
+        f"- Furnish with: {furniture}; {st['rug']} under all main furniture, "
+        f"{st['art']} on the main wall, {st['plants']}, {st['lamp']}, "
+        f"{st['ceiling']}, layered cushions, books and ceramics ONLY on the "
+        "table.\n"
+        f"{window_line}"
+        "- PLACEMENT: few high-quality decor pieces, generous open space; "
+        "corners MAY stay empty; never crowd two items into one spot; plants "
+        "NEVER stand in front of or overlap furniture; nothing blocks windows, "
+        "doors or walkways; furniture square to walls; floor and rug CLEAR of "
+        "books and papers.\n"
+        f"- COLOR 60/30/10: DOMINANT 60% {color_tone} on walls, ceiling, "
+        "curtains and rug; SECONDARY 30% one deeper harmonizing shade on sofa, "
+        "armchairs and large upholstery; ACCENT 10% ONE bold contrasting color "
+        f"ONLY on cushions, art and small decor; {st['textures']}.\n"
+        "- Editorial photo, soft natural light, contact shadows."
+    )
+    return prompt
+
+
+# ===========================================================
+# OUTPUT SIZE
 # ===========================================================
 
 def get_target_size(image):
-    """Determine target size (must be divisible by 8 for SD)"""
+    """Pick output dims (divisible by 32) that keep the photo's orientation.
+
+    On <7.5 GB GPUs we shrink to keep activation memory in budget, exactly like
+    Gen_klein.py does for this 6 GB RTX 3050.
+    """
     if isinstance(image, np.ndarray):
         h, w = image.shape[:2]
     else:
         w, h = image.size
 
-    if w > h:
-        return 1024, 768   # Landscape
+    landscape = w >= h
+    if torch.cuda.is_available():
+        vram_gb = torch.cuda.get_device_properties(0).total_memory / 1024**3
     else:
-        return 768, 1024   # Portrait
+        vram_gb = 0.0
 
-
-def get_canny_image(image, target_width, target_height):
-    """
-    Generate CLEAN Canny edge map: white edges on black background.
-
-    ControlNet Canny model was trained on pure white-on-black edge maps.
-    Do NOT blend with original image — that confuses the model.
-    """
-    resized = cv2.resize(image, (target_width, target_height),
-                         interpolation=cv2.INTER_CUBIC)
-
-    if len(resized.shape) == 3:
-        gray = cv2.cvtColor(resized, cv2.COLOR_BGR2GRAY)
-    else:
-        gray = resized
-
-    # Standard Canny — clean thresholds for structural edges
-    canny = cv2.Canny(gray, 80, 160)
-
-    # Convert to 3-channel RGB PIL Image (ControlNet expects RGB)
-    canny_rgb = cv2.cvtColor(canny, cv2.COLOR_GRAY2RGB)
-    return Image.fromarray(canny_rgb), canny
-
-
-def get_depth_image(image, target_width, target_height):
-    """Generate depth map using transformers pipeline or fallback"""
-    global _models
-    if not _models.get("depth_estimator"):
-        # Fallback to simple grayscale representation if not available
-        gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
-        gray = cv2.resize(gray, (target_width, target_height))
-        return Image.fromarray(cv2.cvtColor(gray, cv2.COLOR_GRAY2RGB))
-        
-    i_rgb = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
-    pil_image = Image.fromarray(i_rgb)
-    
-    depth_pil = _models["depth_estimator"](pil_image)["depth"]
-    depth_rgb = Image.fromarray(cv2.cvtColor(np.array(depth_pil), cv2.COLOR_GRAY2RGB))
-    return depth_rgb.resize((target_width, target_height), Image.Resampling.LANCZOS)
-
-
-def get_seg_image(
-    image,
-    target_width,
-    target_height,
-    visible_openings,
-    camera_params,
-    src_w,
-    src_h,
-    crop_box=None
-):
-    """Build a semantic segmentation mask using ADE20K color palette for ControlNet"""
-    # ADE20K colors: Wall is [120, 120, 120], Floor is [80, 50, 50]
-    seg = np.full((target_height, target_width, 3), [120, 120, 120], dtype=np.uint8)
-    
-    # Simple floor approximation: bottom 40% is floor
-    floor_start = int(target_height * 0.6)
-    seg[floor_start:, :] = [80, 50, 50]
-    
-    if not visible_openings or not camera_params:
-        return Image.fromarray(seg)
-        
-    intrinsic = camera_params.get("intrinsic")
-    extrinsic = camera_params.get("extrinsic")
-    if intrinsic is None or extrinsic is None:
-        return Image.fromarray(seg)
-
-    if crop_box is not None:
-        crop_x1, crop_y1, crop_x2, crop_y2 = crop_box
-        source_w = max(1, crop_x2 - crop_x1)
-        source_h = max(1, crop_y2 - crop_y1)
-    else:
-        crop_x1, crop_y1 = 0, 0
-        source_w, source_h = src_w, src_h
-
-    sx = target_width / source_w
-    sy = target_height / source_h
-
-    for op in visible_openings:
-        corners_3d = op.get("corners_3d")
-        op_type = op.get("type", "door")
-
-        if not corners_3d:
-            continue
-
-        pts_2d = []
-        for corner in corners_3d:
-            px = _project_point(corner, intrinsic, extrinsic)
-            if px is None:
-                break
-
-            u = px[0] - crop_x1
-            v = px[1] - crop_y1
-            pts_2d.append((u * sx, v * sy))
-
-        if len(pts_2d) < 4:
-            continue
-
-        pts_np = np.array(pts_2d, dtype=np.float32)
-        pts_np[:, 0] = np.clip(pts_np[:, 0], 0, target_width - 1)
-        pts_np[:, 1] = np.clip(pts_np[:, 1], 0, target_height - 1)
-        pts_int = pts_np.astype(np.int32)
-        
-        # ADE20K colors (RGB): Door is [8, 255, 51], Windowpane is [230, 230, 230]
-        color = (8, 255, 51) if op_type == "door" else (230, 230, 230)
-        cv2.fillPoly(seg, [pts_int], color=color)
-
-    return Image.fromarray(seg)
+    if vram_gb and vram_gb < 7.5:
+        return (768, 512) if landscape else (512, 768)
+    return (1024, 768) if landscape else (768, 1024)
 
 
 # ===========================================================
-# 3D → 2D OPENING PROJECTION
+# MODEL PIPELINE (two-stage, memory-safe)
 # ===========================================================
 
-def _project_point(xyz, intrinsic, extrinsic):
-    """Project a single 3D world point [x, y, z] to 2D pixel [u, v].
-    
-    Open3D world coordinates: X = right (floor plan x),
-                               Y = forward (floor plan y),
-                               Z = up (wall height)
-    Extrinsic is the 4×4 world-to-camera transform from Open3D.
-    
-    Returns (u, v) pixel coords, or None if point is behind the camera.
-    """
-    K = np.array(intrinsic)   # 3×3
-    E = np.array(extrinsic)   # 4×4  (world → camera)
-
-    # Homogeneous world point
-    world_h = np.array([xyz[0], xyz[1], xyz[2], 1.0])
-
-    # Apply extrinsic: get camera-space coordinates
-    cam = E @ world_h          # shape (4,)
-
-    # Open3D extrinsic gives a right-hand camera: Z points away from camera
-    # (into the scene). Point is visible only if cam[2] > 0.
-    if cam[2] <= 0:
-        return None
-
-    # Apply intrinsic (K acts on (X_c, Y_c, Z_c))
-    uv = K @ cam[:3]
-    u = uv[0] / uv[2]
-    v = uv[1] / uv[2]
-    return (u, v)
+_state = {"model_dir": None}
 
 
-def _project_opening_points(corners_3d, intrinsic, extrinsic, crop_box=None):
-    """Project 3D opening corners and optionally remap them into a cropped source view."""
-    points = []
-    crop_x1, crop_y1 = (crop_box[0], crop_box[1]) if crop_box is not None else (0, 0)
-
-    for corner in corners_3d:
-        px = _project_point(corner, intrinsic, extrinsic)
-        if px is None:
-            return None
-        points.append((px[0] - crop_x1, px[1] - crop_y1))
-
-    return points
+def _get_model_dir():
+    if _state["model_dir"] is None:
+        _state["model_dir"] = _resolve_model_dir()
+    return _state["model_dir"]
 
 
-def draw_openings_on_canny(canny_pil, visible_openings, camera_params,
-                            src_w, src_h, target_w, target_h, crop_box=None):
-    """
-    Project 3D door/window corners to 2D and draw bright white outlines
-    (plus a lighter fill) on the Canny conditioning image.
+def _encode_prompts(model_dir, prompts):
+    """Stage 1: load the 4-bit text encoder, embed every prompt, then free it."""
+    print("[AI] Stage 1/2: loading text encoder (4-bit)...")
+    tokenizer = AutoTokenizer.from_pretrained(os.path.join(model_dir, "tokenizer"))
 
-    This tells ControlNet EXACTLY where the door/window is — even if
-    it's only a thin sliver seen at a sharp perspective angle.
-
-    Args:
-        canny_pil:        PIL Image (RGB), the Canny edge map at target size
-        visible_openings: list of dicts with keys: type, corners_3d
-        camera_params:    dict with intrinsic, extrinsic, width, height
-        src_w, src_h:     original screenshot pixel dimensions
-        target_w, target_h: AI target dimensions (e.g. 1024×768)
-
-    Returns:
-        PIL Image (RGB) with door/window shapes drawn in
-    """
-    if not visible_openings or not camera_params:
-        return canny_pil
-
-    intrinsic = camera_params.get("intrinsic")
-    extrinsic = camera_params.get("extrinsic")
-    cam_w     = camera_params.get("width",  src_w)
-    cam_h     = camera_params.get("height", src_h)
-
-    if intrinsic is None or extrinsic is None:
-        return canny_pil
-
-    if crop_box is not None:
-        crop_x1, crop_y1, crop_x2, crop_y2 = crop_box
-        source_w = max(1, crop_x2 - crop_x1)
-        source_h = max(1, crop_y2 - crop_y1)
-    else:
-        source_w, source_h = src_w, src_h
-
-    # Scale factor: current source view → target AI size
-    sx = target_w / source_w
-    sy = target_h / source_h
-
-    canny_np = np.array(canny_pil)   # (H, W, 3) uint8
-
-    for op in visible_openings:
-        corners_3d = op.get("corners_3d")
-        op_type    = op.get("type", "door")
-
-        if not corners_3d:
-            continue
-
-        # Project all 4 corners
-        pts_2d = _project_opening_points(corners_3d, intrinsic, extrinsic, crop_box=crop_box)
-        if pts_2d is not None:
-            pts_2d = [(u * sx, v * sy) for u, v in pts_2d]
-
-        if not pts_2d or len(pts_2d) < 4:
-            print(f"[AI] Opening {op_type} has corner(s) behind camera, skipping projection")
-            continue
-
-        # Clamp to image bounds
-        pts_np = np.array(pts_2d, dtype=np.float32)
-        pts_np[:, 0] = np.clip(pts_np[:, 0], 0, target_w - 1)
-        pts_np[:, 1] = np.clip(pts_np[:, 1], 0, target_h - 1)
-
-        pts_int = pts_np.astype(np.int32)
-
-        # Compute pixel-space bounding box for diagnostics
-        x_min, y_min = pts_int[:, 0].min(), pts_int[:, 1].min()
-        x_max, y_max = pts_int[:, 0].max(), pts_int[:, 1].max()
-        w_px = x_max - x_min
-        h_px = y_max - y_min
-        print(f"[AI] Projecting {op_type}: 2D box [{x_min},{y_min}]->[{x_max},{y_max}]  ({w_px}x{h_px}px)")
-
-        if w_px < 3 and h_px < 3:
-            print("[AI]   too small after projection, skipping")
-            continue
-
-        # Draw clear outlines only — windows use a simple rectangle to avoid being
-        # interpreted as a TV or wall panel.
-        thickness = max(3, min(w_px, h_px) // 5 + 2)
-        cv2.polylines(canny_np, [pts_int], isClosed=True,
-                      color=(255, 255, 255), thickness=thickness)
-
-        if op_type == "door":
-            cx     = int((pts_int[0, 0] + pts_int[1, 0]) / 2)
-            cy_bot = int((pts_int[0, 1] + pts_int[1, 1]) / 2)
-            cy_top = int((pts_int[2, 1] + pts_int[3, 1]) / 2)
-            cv2.line(canny_np, (cx, cy_bot), (cx, cy_top),
-                     (255, 255, 255), max(2, thickness // 2))
-        else:  # window
-            sill_y = int(max(y_min, y_max - max(2, thickness // 2)))
-            cv2.line(canny_np, (x_min, sill_y), (x_max, sill_y),
-                     (255, 255, 255), max(2, thickness // 3))
-
-    return Image.fromarray(canny_np)
-
-
-def draw_openings_on_init_image(init_pil, visible_openings, camera_params,
-                                src_w, src_h, target_w, target_h, crop_box=None):
-    """Overlay clear door/window cues on the init image so img2img preserves them."""
-    if not visible_openings or not camera_params:
-        return init_pil
-
-    intrinsic = camera_params.get("intrinsic")
-    extrinsic = camera_params.get("extrinsic")
-    if intrinsic is None or extrinsic is None:
-        return init_pil
-
-    if crop_box is not None:
-        crop_x1, crop_y1, crop_x2, crop_y2 = crop_box
-        source_w = max(1, crop_x2 - crop_x1)
-        source_h = max(1, crop_y2 - crop_y1)
-    else:
-        source_w, source_h = src_w, src_h
-
-    sx = target_w / source_w
-    sy = target_h / source_h
-
-    init_np = np.array(init_pil).copy()
-    overlay = init_np.copy()
-
-    for op in visible_openings:
-        corners_3d = op.get("corners_3d")
-        op_type = op.get("type", "door")
-        if not corners_3d:
-            continue
-
-        pts_2d = _project_opening_points(corners_3d, intrinsic, extrinsic, crop_box=crop_box)
-        if not pts_2d or len(pts_2d) < 4:
-            continue
-
-        pts_np = np.array([(u * sx, v * sy) for u, v in pts_2d], dtype=np.float32)
-        pts_np[:, 0] = np.clip(pts_np[:, 0], 0, target_w - 1)
-        pts_np[:, 1] = np.clip(pts_np[:, 1], 0, target_h - 1)
-        pts_int = pts_np.astype(np.int32)
-
-        if op_type == "window":
-            # Light outline only — the 3D render already has the bright glass/sky
-            cv2.polylines(overlay, [pts_int], isClosed=True, color=(255, 255, 255), thickness=3)
+    # The encoder silently truncates past 512 tokens, which would drop the tail
+    # constraints — warn if any prompt is too long.
+    for i, prompt in enumerate(prompts):
+        chat = tokenizer.apply_chat_template(
+            [{"role": "user", "content": prompt}],
+            tokenize=False, add_generation_prompt=True, enable_thinking=False,
+        )
+        ntok = len(tokenizer(chat)["input_ids"])
+        if ntok > 512:
+            print(f"[AI] *** WARNING: prompt {i} = {ntok} tokens > 512 — the "
+                  "end WILL BE CUT OFF. Shorten it! ***")
         else:
-            cv2.fillPoly(overlay, [pts_int], color=(135, 92, 60))
-            cv2.polylines(overlay, [pts_int], isClosed=True, color=(78, 50, 30), thickness=5)
-            x_min, y_min = pts_int[:, 0].min(), pts_int[:, 1].min()
-            x_max, y_max = pts_int[:, 0].max(), pts_int[:, 1].max()
-            cx = int((x_min + x_max) / 2)
-            cv2.line(overlay, (cx, y_min), (cx, y_max), color=(95, 62, 38), thickness=2)
+            print(f"[AI] Prompt {i} tokens: {ntok}/512")
 
-    init_np = cv2.addWeighted(overlay, 0.38, init_np, 0.62, 0)
-    return Image.fromarray(init_np)
-
-
-def prepare_init_image(image, target_width, target_height):
-    """
-    Prepare the screenshot as the img2img starting image.
-    The AI starts from this and transforms it, so doors/windows are preserved.
-    """
-    resized = cv2.resize(image, (target_width, target_height),
-                         interpolation=cv2.INTER_CUBIC)
-
-    if len(resized.shape) == 3 and resized.shape[2] == 3:
-        resized = cv2.cvtColor(resized, cv2.COLOR_BGR2RGB)
-
-    return Image.fromarray(resized)
-
-# ===========================================================
-# PROMPTS
-# ===========================================================
-
-ROOM_PROMPTS = {
-    "Living Room": (
-        "(beautifully furnished living room:1.6), modern interior design, photorealistic, "
-        "real furniture, sofa, coffee table, rug, shelving, lamps, plants, wall art, "
-        "tasteful decor, balanced composition, cozy lighting"
-    ),
-    "Bedroom": (
-        "(beautifully furnished bedroom:1.6), modern interior design, photorealistic, "
-        "real furniture, bed, nightstands, dresser, rug, lamps, decor, plants, cozy lighting"
-    ),
-    "Kitchen": (
-        "(beautifully furnished kitchen:1.6), modern interior design, photorealistic, "
-        "real cabinets, countertops, island, stools, appliances, pendant lights, styled decor"
-    ),
-    "Bathroom": (
-        "(beautifully furnished bathroom:1.5), modern interior design, photorealistic, "
-        "vanity, mirror, towels, accessories, fixtures, styled decor, bright lighting"
-    ),
-    "Office": (
-        "(beautifully furnished home office:1.6), modern interior design, photorealistic, "
-        "desk, office chair, shelves, computer, lamp, decor, plants, balanced layout"
-    ),
-    "Dining Room": (
-        "(beautifully furnished dining room:1.6), modern interior design, photorealistic, "
-        "dining table, chairs, sideboard, pendant light, rug, decor, warm lighting"
-    ),
-    "Kids Room": (
-        "(beautifully furnished kids room:1.5), modern interior design, photorealistic, "
-        "kids bed, toy storage, desk, playful decor, rug, cheerful lighting"
-    ),
-    "Guest Room": (
-        "(beautifully furnished guest room:1.6), modern interior design, photorealistic, "
-        "bed, nightstand, dresser, mirror, seating, decor, warm lighting"
-    ),
-    "Studio": (
-        "(beautifully furnished studio apartment:1.6), modern interior design, photorealistic, "
-        "sofa, bed zone, dining area, storage, decor, balanced furniture layout"
+    text_encoder = AutoModelForCausalLM.from_pretrained(
+        os.path.join(model_dir, "text_encoder"),
+        torch_dtype=torch.bfloat16,
+        quantization_config=TransformersBnb4bit(
+            load_in_4bit=True,
+            bnb_4bit_quant_type="nf4",
+            bnb_4bit_compute_dtype=torch.bfloat16,
+        ),
+        device_map={"": 0},
     )
-}
 
-BASE_NEGATIVE_PROMPT = (
-    "blurry, lowres, distorted, bad lighting, wrong perspective, "
-    "changing room structure, moving walls, deformed architecture, "
-    "empty room, unfurnished, bare walls, missing furniture, sparse furniture, "
-    "television, tv, monitor, wall panel, wood panel, giant window, oversized window, "
-    "full glass wall, floor-to-ceiling glazing, moved window, moved door, low detail"
-)
+    embeds = []
+    with torch.no_grad():
+        for prompt in prompts:
+            emb = Flux2KleinPipeline._get_qwen3_prompt_embeds(
+                text_encoder=text_encoder,
+                tokenizer=tokenizer,
+                prompt=prompt,
+                dtype=torch.bfloat16,
+                device="cuda",
+            ).cpu()  # park off-GPU while models swap
+            embeds.append(emb)
+
+    del text_encoder, tokenizer
+    gc.collect()
+    torch.cuda.empty_cache()
+    print("[AI] Prompts encoded, text encoder freed.")
+    return embeds
+
+
+def _load_transformer_pipe(model_dir):
+    """Stage 2: load the 4-bit transformer + VAE onto the GPU (no text encoder)."""
+    print("[AI] Stage 2/2: loading transformer (4-bit) + VAE...")
+    transformer = Flux2Transformer2DModel.from_pretrained(
+        model_dir,
+        subfolder="transformer",
+        torch_dtype=torch.bfloat16,
+        quantization_config=DiffusersBnb4bit(
+            load_in_4bit=True,
+            bnb_4bit_quant_type="nf4",
+            bnb_4bit_compute_dtype=torch.bfloat16,
+        ),
+    )
+
+    pipe = Flux2KleinPipeline.from_pretrained(
+        model_dir,
+        transformer=transformer,
+        text_encoder=None,   # already used and freed in stage 1
+        tokenizer=None,
+        torch_dtype=torch.bfloat16,
+    )
+    pipe.to("cuda")
+
+    # Activation-memory savers (the 4-bit load already handles the weights).
+    try:
+        pipe.enable_attention_slicing()
+    except Exception:
+        pass
+    try:
+        pipe.vae.enable_tiling()
+    except Exception:
+        pass
+
+    gc.collect()
+    torch.cuda.empty_cache()
+    return pipe
+
+
+def generate_asset_references(jobs, output_dir):
+    """Generate isolated furniture reference images for local image-to-3D.
+
+    ``jobs`` contains ``key`` and ``prompt`` values. Existing PNGs are reused,
+    making the expensive FLUX pass a one-time operation for each style/asset.
+    The generated images use a neutral background and a clear three-quarter
+    product view, which is the input format TripoSR reconstructs best.
+    """
+    os.makedirs(output_dir, exist_ok=True)
+    pending = []
+    ready = {}
+    for job in jobs:
+        path = os.path.join(output_dir, f"{job['key']}.png")
+        if os.path.isfile(path) and os.path.getsize(path) > 10_000:
+            ready[job["key"]] = path
+        else:
+            pending.append(dict(job, path=path))
+
+    if not pending:
+        return ready
+
+    with _GEN_LOCK:
+        model_dir = _get_model_dir()
+        prompts = [
+            (
+                f"{job['prompt']}. A single freestanding furniture object, "
+                "complete object fully visible and centered, three-quarter front "
+                "product view, accurate construction and realistic proportions, "
+                "soft even studio lighting, plain mid-gray background, no room, "
+                "no floor, no people, no text, no watermark, no cropped edges."
+            )
+            for job in pending
+        ]
+        prompt_embeds = _encode_prompts(model_dir, prompts)
+        pipe = _load_transformer_pipe(model_dir)
+        blank = Image.new("RGB", (512, 512), (128, 128, 128))
+        try:
+            for index, (job, embeds) in enumerate(zip(pending, prompt_embeds)):
+                result = pipe(
+                    prompt=None,
+                    prompt_embeds=embeds.to("cuda"),
+                    image=[blank],
+                    width=512,
+                    height=512,
+                    num_inference_steps=STEPS,
+                    guidance_scale=GUIDANCE,
+                    generator=torch.Generator(device="cuda").manual_seed(
+                        SEED + index + 100
+                    ),
+                ).images[0]
+                result.convert("RGB").save(job["path"])
+                ready[job["key"]] = job["path"]
+                print(f"[AI-3D] Furniture reference ready: {job['key']}")
+        finally:
+            del pipe
+            gc.collect()
+            torch.cuda.empty_cache()
+
+    return ready
+
 
 # ===========================================================
-# MAIN GENERATION FUNCTION - IMG2IMG + CANNY CONTROLNET
+# GEOMETRY SCORING (recall of the photo's structural edges)
+# ===========================================================
+
+def geometry_score(input_rgb, candidate_pil):
+    """Fraction of the photo's structural edges kept in the redesign."""
+    import cv2
+
+    w, h = candidate_pil.size
+    inp = cv2.resize(input_rgb, (w, h))
+    edges_in = cv2.Canny(
+        cv2.GaussianBlur(cv2.cvtColor(inp, cv2.COLOR_RGB2GRAY), (5, 5), 0),
+        40, 120,
+    )
+    edges_cand = cv2.Canny(cv2.cvtColor(np.array(candidate_pil), cv2.COLOR_RGB2GRAY), 40, 120)
+    edges_cand = cv2.dilate(edges_cand, np.ones((7, 7), np.uint8))
+    kept = ((edges_in > 0) & (edges_cand > 0)).sum()
+    return kept / max((edges_in > 0).sum(), 1)
+
+
+# ===========================================================
+# MAIN GENERATION FUNCTION
 # ===========================================================
 
 def generate_furnished_plan(base_rgb, room_masks, doors, windows, room_types,
                             px_per_m=100, has_doors=None, has_windows=None,
-                            visible_openings=None, camera_params=None):
-    """
-    Generate furnished room images using img2img + Canny ControlNet.
+                            visible_openings=None, camera_params=None,
+                            styles=None, color_tone=DEFAULT_COLOR_TONE):
+    """Redesign each room screenshot with FLUX.2-klein-4B (image editing).
 
-    The img2img approach starts from the actual 3D screenshot, so the AI
-    naturally preserves the room layout including door/window positions.
-    Canny ControlNet provides additional edge guidance for wall structure.
-    
-    visible_openings: list of dicts with 3D corner geometry for projection
-    camera_params:    dict with intrinsic/extrinsic matrices from Open3D
+    The model receives the actual 3D screenshot as its input image, so the
+    room's geometry (walls, windows, doors, camera angle) is preserved by the
+    image itself — no ControlNet conditioning needed. `visible_openings` and
+    `camera_params` are accepted for backward compatibility but are no longer
+    used for projection.
+
+    Only one call runs at a time (see `_GEN_LOCK`): the 6 GB GPU cannot hold two
+    model loads at once, so concurrent requests are serialized here.
+
+    Returns a list of {"furnished": PIL.Image, "room_type": str, "index": int}.
     """
-    load_models()
-    output = []
+    with _GEN_LOCK:
+        return _generate_furnished_plan_impl(
+            base_rgb, room_masks, doors, windows, room_types,
+            px_per_m=px_per_m, has_doors=has_doors, has_windows=has_windows,
+            visible_openings=visible_openings, camera_params=camera_params,
+            styles=styles, color_tone=color_tone,
+        )
+
+
+def _generate_furnished_plan_impl(base_rgb, room_masks, doors, windows, room_types,
+                                  px_per_m=100, has_doors=None, has_windows=None,
+                                  visible_openings=None, camera_params=None,
+                                  styles=None, color_tone=DEFAULT_COLOR_TONE):
     base_image = base_rgb if isinstance(base_rgb, np.ndarray) else np.array(base_rgb)
 
-    if not room_masks or len(room_masks) == 0:
+    if not room_masks:
         room_masks = [None]
-        if not room_types:
-            room_types = ["Living Room"]
+    if not room_types:
+        room_types = ["Living Room"]
 
+    # ---- gather one (room image, prompt, size) per room -------------------
+    jobs = []
     for idx, mask in enumerate(room_masks):
         room_type = room_types[idx] if idx < len(room_types) else "Living Room"
-        print(f"\n==== ROOM {idx+1} - {room_type} ====\n")
+        style = styles[idx] if styles and idx < len(styles) else "Modern"
 
-        try:
-            # Get room image region
-            if mask is not None:
-                ys, xs = np.where(mask == 255)
-                if xs.size == 0 or ys.size == 0:
-                    print(f"[AI] Skipping room {idx+1}: empty mask")
-                    continue
-                x1, x2 = xs.min(), xs.max()
-                y1, y2 = ys.min(), ys.max()
-                room = base_image[y1:y2+1, x1:x2+1]
-                crop_box = (x1, y1, x2 + 1, y2 + 1)
-            else:
-                room = base_image
-                crop_box = None
+        if mask is not None:
+            ys, xs = np.where(mask == 255)
+            if xs.size == 0 or ys.size == 0:
+                print(f"[AI] Skipping room {idx + 1}: empty mask")
+                continue
+            x1, x2 = xs.min(), xs.max()
+            y1, y2 = ys.min(), ys.max()
+            room = base_image[y1:y2 + 1, x1:x2 + 1]
+        else:
+            room = base_image
 
-            # Determine target size
-            target_w, target_h = get_target_size(room)
-            src_h, src_w = room.shape[:2]
-            print(f"[AI] Room size: {src_w}x{src_h}")
-            print(f"[AI] Target size: {target_w}x{target_h}")
+        room_has_windows = bool(has_windows) if has_windows is not None else (len(windows) > 0)
+        target_w, target_h = get_target_size(room)
+        room_pil = Image.fromarray(room).convert("RGB")
+        prompt = build_prompt(room_type, style, color_tone, has_windows=room_has_windows)
 
-            # Prepare the screenshot as img2img starting image
-            init_image = prepare_init_image(room, target_w, target_h)
-            init_image = draw_openings_on_init_image(
-                init_image, visible_openings, camera_params,
-                src_w, src_h, target_w, target_h, crop_box=crop_box
-            )
+        print(f"\n[AI] ==== ROOM {idx + 1} - {room_type} / {style} ====")
+        print(f"[AI] {room.shape[1]}x{room.shape[0]} -> generating {target_w}x{target_h}")
+        jobs.append(dict(index=idx, room_type=room_type, room_pil=room_pil,
+                         room_rgb=room, width=target_w, height=target_h,
+                         prompt=prompt))
 
-            # Generate clean Canny edge map (white on black only)
-            canny_image, canny_raw = get_canny_image(room, target_w, target_h)
-            edge_ratio = np.sum(canny_raw > 0) / canny_raw.size
-            print(f"[AI] Canny edge ratio: {edge_ratio:.4f}")
+    if not jobs:
+        return []
 
-            # Project 3D door/window positions onto Canny image
-            if visible_openings and camera_params:
-                print(f"[AI] Drawing {len(visible_openings)} opening(s) onto Canny map...")
-                canny_image = draw_openings_on_canny(
-                    canny_image, visible_openings, camera_params,
-                    src_w, src_h, target_w, target_h, crop_box=crop_box
-                )
-            else:
-                print("[AI] No opening geometry available for Canny projection")
+    model_dir = _get_model_dir()
 
-            # Generate Depth and Seg images
-            depth_image = get_depth_image(room, target_w, target_h)
-            seg_image = get_seg_image(
-                room, target_w, target_h, visible_openings, camera_params,
-                src_w, src_h, crop_box=crop_box
-            )
+    # ---- stage 1: encode every prompt, then free the encoder --------------
+    prompt_embeds = _encode_prompts(model_dir, [j["prompt"] for j in jobs])
 
-            # Determine door/window info from floor plan data
-            if has_doors is not None:
-                actual_has_doors = has_doors
-            else:
-                actual_has_doors = len(doors) > 0
+    # ---- stage 2: load the transformer once, denoise every room ----------
+    pipe = _load_transformer_pipe(model_dir)
 
-            if has_windows is not None:
-                actual_has_windows = has_windows
-            else:
-                actual_has_windows = False
+    output = []
+    try:
+        for job, embeds in zip(jobs, prompt_embeds):
+            try:
+                result = pipe(
+                    prompt=None,
+                    prompt_embeds=embeds.to("cuda"),
+                    image=[job["room_pil"]],
+                    width=job["width"],
+                    height=job["height"],
+                    num_inference_steps=STEPS,
+                    guidance_scale=GUIDANCE,
+                    generator=torch.Generator(device="cuda").manual_seed(SEED),
+                ).images[0]
 
-            print(f"[AI] Layout: has_doors={actual_has_doors}, has_windows={actual_has_windows}")
+                try:
+                    score = geometry_score(job["room_rgb"], result)
+                    print(f"[AI] Room {job['index'] + 1}: geometry score {score:.3f}")
+                except Exception:
+                    pass
 
-            # Build prompt — only mention windows/curtains if they actually exist
-            prompt = ROOM_PROMPTS.get(room_type, ROOM_PROMPTS["Living Room"])
-            negative_prompt = BASE_NEGATIVE_PROMPT
-
-            if actual_has_windows:
-                # Windows exist — preserve them, but keep prompt conservative to avoid scene drift
-                prompt += ", keep existing window exactly where shown, same size and wall position, natural daylight, optional light sheer curtains"
-                negative_prompt += ", no windows, blocked windows, moved window, oversized window, giant window, tv on wall"
-            else:
-                # NO windows in this room — block all window/curtain hallucinations
-                negative_prompt += (
-                    ", window, windows, windowpane, glass pane, curtain, curtains, "
-                    "drapes, blinds, shutters, daylight from window, sunlight through window"
-                )
-
-            if actual_has_doors:
-                prompt += ", keep existing door exactly where shown, same size and wall position, preserve the visible doorway and door frame"
-                negative_prompt += ", no door, missing door, doorless, covered doorway, wall where door should be, furniture blocking doorway"
-            else:
-                negative_prompt += ", door, doorway, door frame, entrance"
-
-            prompt += ", realistic furnished room, balanced furniture, keep room architecture unchanged, preserve all openings and wall positions"
-
-            print(f"[AI] Prompt: {prompt[:120]}...")
-            print(f"[AI] Negative: {negative_prompt[:100]}...")
-
-            # ── Img2Img + ControlNet call ──
-            print("[AI] Generating furnished room (img2img + Multi-ControlNet)...")
-            result = _models["pipe"](
-                prompt=prompt,
-                image=init_image,
-                control_image=[canny_image, depth_image, seg_image],
-                controlnet_conditioning_scale=[0.01, 0.40, 0.15],
-                strength=0.9,
-                num_inference_steps=36,
-                guidance_scale=9,
-                negative_prompt=negative_prompt,
-                generator=torch.manual_seed(576906284)
-            )
-
-            furnished_img = result.images[0]
-
-            output.append({
-                "furnished": furnished_img,
-                "room_type": room_type,
-                "index": idx
-            })
-
-            print(f"[AI] Room {idx+1} generated successfully!")
-
-        except Exception as e:
-            print(f"[AI ERROR] Failed to generate room {idx+1}: {e}")
-            import traceback
-            traceback.print_exc()
-            continue
+                output.append({
+                    "furnished": result,
+                    "room_type": job["room_type"],
+                    "index": job["index"],
+                })
+                print(f"[AI] Room {job['index'] + 1} generated successfully!")
+            except Exception as e:
+                print(f"[AI ERROR] Failed to generate room {job['index'] + 1}: {e}")
+                import traceback
+                traceback.print_exc()
+                continue
+    finally:
+        # Free the GPU so the desktop app stays responsive between generations.
+        del pipe
+        gc.collect()
+        torch.cuda.empty_cache()
 
     return output
 
@@ -624,34 +712,39 @@ def generate_furnished_plan(base_rgb, room_masks, doors, windows, room_types,
 # ===========================================================
 
 if __name__ == "__main__":
-    test_dir = r"C:\Users\Lenovo\Desktop\Interior_plan\room_designs\screenshots"
+    import cv2
 
-    if os.path.exists(test_dir):
-        files = [f for f in os.listdir(test_dir) if f.endswith('.png')]
-        if files:
-            img_path = os.path.join(test_dir, files[0])
-            print(f"Testing with: {img_path}")
+    # Prefer a captured room screenshot; fall back to a bundled floor-plan image.
+    candidates = sorted(glob.glob(os.path.join(
+        os.path.dirname(__file__), "room_designs", "screenshots", "*.png")))
+    if not candidates:
+        candidates = sorted(glob.glob(os.path.join(
+            os.path.dirname(__file__), "plan", "*.jp*g")))
 
-            img = cv2.imread(img_path)
-            print(f"[INFO] Image loaded: {img.shape}")
+    if not candidates:
+        raise SystemExit("No test image found under room_designs/screenshots or plan/")
 
-            results = generate_furnished_plan(
-                base_rgb=img,
-                room_masks=[],
-                doors=[],
-                windows=[],
-                room_types=["Living Room"],
-                has_doors=True,
-                has_windows=False
-            )
+    img_path = candidates[0]
+    print(f"[TEST] Using image: {img_path}")
+    img_bgr = cv2.imread(img_path)
+    if img_bgr is None:
+        raise SystemExit(f"Could not read {img_path}")
+    img_rgb = cv2.cvtColor(img_bgr, cv2.COLOR_BGR2RGB)
 
-            if results:
-                results[0]["furnished"].save("test_output.png")
-                results[0]["furnished"].show()
-                print("[OK] Test successful!")
-            else:
-                print("[ERROR] Test failed - no results")
-        else:
-            print("No screenshot files found for testing")
+    results = generate_furnished_plan(
+        base_rgb=img_rgb,
+        room_masks=[],
+        doors=[],
+        windows=[],
+        room_types=["Living Room"],
+        has_doors=True,
+        has_windows=False,
+        styles=["Modern"],
+    )
+
+    if results:
+        out = os.path.join(os.path.dirname(__file__), "test_output.png")
+        results[0]["furnished"].save(out)
+        print(f"[OK] Test successful! Saved {out}")
     else:
-        print("Test directory not found")
+        print("[ERROR] Test failed - no results")

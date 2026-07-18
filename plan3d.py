@@ -143,12 +143,16 @@ def create_door_geometry(p1, p2, wall_angle):
     Returns list of meshes
     """
     meshes = []
-    
+
     p1 = np.array(p1)
     p2 = np.array(p2)
-    
+
     door_width = np.linalg.norm(p2 - p1)
-    
+    if door_width < 0.15:
+        # degenerate opening (e.g. a door clamped at a wall corner) —
+        # nothing to draw, and zero-width boxes crash Open3D
+        return meshes
+
     # Door direction vectors
     dir_along = (p2 - p1) / door_width if door_width > 0 else np.array([1, 0])
     dir_perp = np.array([-dir_along[1], dir_along[0]])

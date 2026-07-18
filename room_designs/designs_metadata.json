@@ -1511,6 +1511,311 @@
       },
       "created_at": "2026-03-12T03:25:38.976215",
       "status": "completed"
+    },
+    {
+      "design_id": "20260718_145521",
+      "room_name": "Room 1",
+      "wall_index": 0,
+      "screenshot_path": "C:\\Sara\\Interior_Plan\\room_designs\\screenshots\\20260718_145521_Room_1_wall0.png",
+      "ai_path": null,
+      "room_type": "Living Room",
+      "style": "Modern",
+      "has_doors": false,
+      "has_windows": false,
+      "visible_openings": [],
+      "camera_params": {
+        "width": 1400,
+        "height": 900,
+        "intrinsic": [
+          [
+            779.4228634059948,
+            0.0,
+            699.5
+          ],
+          [
+            0.0,
+            779.4228634059948,
+            449.5
+          ],
+          [
+            0.0,
+            0.0,
+            1.0
+          ]
+        ],
+        "extrinsic": [
+          [
+            -0.9999521753265038,
+            0.00977993148202757,
+            0.0,
+            9.156103878883883
+          ],
+          [
+            -0.0,
+            -0.0,
+            -1.0,
+            1.65
+          ],
+          [
+            -0.00977993148202757,
+            -0.9999521753265038,
+            -0.0,
+            -0.8024132944263038
+          ],
+          [
+            0.0,
+            0.0,
+            0.0,
+            1.0
+          ]
+        ]
+      },
+      "created_at": "2026-07-18T14:55:21.360268",
+      "status": "pending"
+    },
+    {
+      "design_id": "20260718_145524",
+      "room_name": "Room 1",
+      "wall_index": 0,
+      "screenshot_path": "C:\\Sara\\Interior_Plan\\room_designs\\screenshots\\20260718_145524_Room_1_wall0.png",
+      "ai_path": null,
+      "room_type": "Living Room",
+      "style": "Modern",
+      "has_doors": false,
+      "has_windows": false,
+      "visible_openings": [],
+      "camera_params": {
+        "width": 1400,
+        "height": 900,
+        "intrinsic": [
+          [
+            779.4228634059948,
+            0.0,
+            699.5
+          ],
+          [
+            0.0,
+            779.4228634059948,
+            449.5
+          ],
+          [
+            0.0,
+            0.0,
+            1.0
+          ]
+        ],
+        "extrinsic": [
+          [
+            -0.9999521753265038,
+            0.00977993148202757,
+            0.0,
+            9.156103878883883
+          ],
+          [
+            -0.0,
+            -0.0,
+            -1.0,
+            1.65
+          ],
+          [
+            -0.00977993148202757,
+            -0.9999521753265038,
+            -0.0,
+            -0.8024132944263038
+          ],
+          [
+            0.0,
+            0.0,
+            0.0,
+            1.0
+          ]
+        ]
+      },
+      "created_at": "2026-07-18T14:55:24.522230",
+      "status": "pending"
+    },
+    {
+      "design_id": "20260718_145524",
+      "room_name": "Room 1",
+      "wall_index": 0,
+      "screenshot_path": "C:\\Sara\\Interior_Plan\\room_designs\\screenshots\\20260718_145524_Room_1_wall0.png",
+      "ai_path": null,
+      "room_type": "Living Room",
+      "style": "Modern",
+      "has_doors": false,
+      "has_windows": false,
+      "visible_openings": [],
+      "camera_params": {
+        "width": 1400,
+        "height": 900,
+        "intrinsic": [
+          [
+            779.4228634059948,
+            0.0,
+            699.5
+          ],
+          [
+            0.0,
+            779.4228634059948,
+            449.5
+          ],
+          [
+            0.0,
+            0.0,
+            1.0
+          ]
+        ],
+        "extrinsic": [
+          [
+            -0.9999521753265038,
+            0.00977993148202757,
+            0.0,
+            9.156103878883883
+          ],
+          [
+            -0.0,
+            -0.0,
+            -1.0,
+            1.65
+          ],
+          [
+            -0.00977993148202757,
+            -0.9999521753265038,
+            -0.0,
+            -0.8024132944263038
+          ],
+          [
+            0.0,
+            0.0,
+            0.0,
+            1.0
+          ]
+        ]
+      },
+      "created_at": "2026-07-18T14:55:24.708321",
+      "status": "pending"
+    },
+    {
+      "design_id": "20260718_145524",
+      "room_name": "Room 1",
+      "wall_index": 0,
+      "screenshot_path": "C:\\Sara\\Interior_Plan\\room_designs\\screenshots\\20260718_145524_Room_1_wall0.png",
+      "ai_path": null,
+      "room_type": "Living Room",
+      "style": "Modern",
+      "has_doors": false,
+      "has_windows": false,
+      "visible_openings": [],
+      "camera_params": {
+        "width": 1400,
+        "height": 900,
+        "intrinsic": [
+          [
+            779.4228634059948,
+            0.0,
+            699.5
+          ],
+          [
+            0.0,
+            779.4228634059948,
+            449.5
+          ],
+          [
+            0.0,
+            0.0,
+            1.0
+          ]
+        ],
+        "extrinsic": [
+          [
+            -0.9999521753265038,
+            0.00977993148202757,
+            0.0,
+            9.156103878883883
+          ],
+          [
+            -0.0,
+            -0.0,
+            -1.0,
+            1.65
+          ],
+          [
+            -0.00977993148202757,
+            -0.9999521753265038,
+            -0.0,
+            -0.8024132944263038
+          ],
+          [
+            0.0,
+            0.0,
+            0.0,
+            1.0
+          ]
+        ]
+      },
+      "created_at": "2026-07-18T14:55:24.888758",
+      "status": "pending"
+    },
+    {
+      "design_id": "20260718_150523",
+      "room_name": "Room 1",
+      "wall_index": 0,
+      "screenshot_path": "C:\\Sara\\Interior_Plan\\room_designs\\screenshots\\20260718_150523_Room_1_wall0.png",
+      "ai_path": "C:\\Sara\\Interior_Plan\\room_designs\\ai_generated\\20260718_150523_ai_design.png",
+      "room_type": "Living Room",
+      "style": "Modern",
+      "has_doors": false,
+      "has_windows": false,
+      "visible_openings": [],
+      "camera_params": {
+        "width": 1400,
+        "height": 900,
+        "intrinsic": [
+          [
+            779.4228634059948,
+            0.0,
+            699.5
+          ],
+          [
+            0.0,
+            779.4228634059948,
+            449.5
+          ],
+          [
+            0.0,
+            0.0,
+            1.0
+          ]
+        ],
+        "extrinsic": [
+          [
+            -0.9999394593774074,
+            0.011003525799413749,
+            0.0,
+            9.185207512151372
+          ],
+          [
+            -0.0,
+            -0.0,
+            -1.0,
+            1.65
+          ],
+          [
+            -0.011003525799413749,
+            -0.9999394593774074,
+            -0.0,
+            -0.9281247334578849
+          ],
+          [
+            0.0,
+            0.0,
+            0.0,
+            1.0
+          ]
+        ]
+      },
+      "created_at": "2026-07-18T15:05:23.184912",
+      "status": "completed"
     }
   ]
 }

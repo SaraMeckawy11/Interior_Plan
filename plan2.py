@@ -9,6 +9,31 @@ Added:
 """
 
 import os, math, json
+
+# ---------------------------------------------------------------------------
+# Auto-relaunch under the project venv. The app's dependencies (OpenCV, torch,
+# diffusers, open3d, ...) live in the FLUX/klein venv, NOT in the system Python.
+# If this file is started with any other interpreter (e.g. VS Code's default
+# "python"), re-run it once under the venv so the Run button just works.
+# ---------------------------------------------------------------------------
+import sys as _sys
+_PROJECT_DIR = os.path.dirname(os.path.abspath(__file__))
+_VENV_CANDIDATES = [
+    os.environ.get("INTERIOR_PLAN_PYTHON", ""),
+    os.path.join(_PROJECT_DIR, ".venv", "Scripts", "python.exe"),
+    os.path.join(_PROJECT_DIR, "hf_cache", "venv", "Scripts", "python.exe"),
+    r"C:\SIA\Interior_design\hf_cache\venv\Scripts\python.exe",
+]
+_VENV_PY = next((path for path in _VENV_CANDIDATES
+                 if path and os.path.isfile(path)), "")
+if _VENV_PY and os.path.normcase(os.path.realpath(_sys.executable)) \
+        != os.path.normcase(os.path.realpath(_VENV_PY)):
+    import importlib.util as _ilu
+    if _ilu.find_spec("cv2") is None:
+        import subprocess as _sp
+        print(f"[BOOT] Relaunching under project venv:\n       {_VENV_PY}")
+        raise SystemExit(_sp.call([_VENV_PY, os.path.abspath(__file__), *_sys.argv[1:]]))
+
 import tkinter as tk
 from tkinter import filedialog, messagebox, ttk
 from PIL import Image, ImageTk
@@ -26,7 +51,7 @@ from room_gallery import (
 )
 
 # ---------------- CONFIG ----------------
-IMAGE_PATH = r"C:\Users\Lenovo\Desktop\Interior_plan\plan\1.jpg"
+IMAGE_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "plan", "1.jpg")
 OUT_DIR = os.path.join(os.getcwd(), "seg_output")
 os.makedirs(OUT_DIR, exist_ok=True)
 
@@ -60,6 +85,68 @@ class AppState:
         self.room_segments = {}  # "Room 1" → polygon
 
 state = AppState()
+
+# ---------- PLAN LAYOUT PERSISTENCE (draw once, keep forever) ----------
+LAYOUT_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                           "plan_layout.json")
+
+
+def save_layout(allow_empty=False):
+    """Autosave the drawn/detected plan so it never has to be redrawn.
+
+    Guard against data loss: never overwrite a saved plan with an EMPTY one
+    unless the user explicitly cleared it (Reset passes allow_empty=True).
+    This stops a stray action, or a second app instance that started before
+    the layout loaded, from wiping the saved plan.
+    """
+    if not (state.inners or state.doors or state.windows) and not allow_empty:
+        return
+    try:
+        data = {
+            "image_path": os.path.relpath(IMAGE_PATH, _PROJECT_DIR).replace("\\", "/"),
+            "rooms": [[list(map(int, p)) for p in poly] for poly in state.inners],
+            "doors": [[list(map(int, a)), list(map(int, b))]
+                      for a, b in state.doors],
+            "windows": [[list(map(int, w[0])), list(map(int, w[1])), w[2]]
+                        for w in state.windows],
+        }
+        with open(LAYOUT_FILE, "w") as f:
+            json.dump(data, f, indent=1)
+        try:
+            lbl_saved.config(text="✓ Autosaved")
+            root.after(1600, lambda: lbl_saved.config(text=""))
+        except Exception:
+            pass   # UI not built yet
+    except Exception as e:
+        print(f"[LAYOUT] Save failed: {e}")
+
+
+def load_layout():
+    """Restore the last saved plan layout (rooms, doors, windows)."""
+    if not os.path.exists(LAYOUT_FILE):
+        return False
+    try:
+        with open(LAYOUT_FILE) as f:
+            data = json.load(f)
+        saved_image = data.get("image_path", "")
+        if not os.path.isabs(saved_image):
+            saved_image = os.path.join(_PROJECT_DIR, saved_image)
+        if os.path.normcase(os.path.realpath(saved_image)) != \
+                os.path.normcase(os.path.realpath(IMAGE_PATH)):
+            return False   # layout belongs to a different plan image
+        state.inners = [[tuple(p) for p in poly] for poly in data.get("rooms", [])]
+        state.room_segments = {f"Room {i + 1}": poly
+                               for i, poly in enumerate(state.inners)}
+        state.doors = [(tuple(a), tuple(b)) for a, b in data.get("doors", [])]
+        state.windows = [(tuple(a), tuple(b), t)
+                         for a, b, t in data.get("windows", [])]
+        print(f"[LAYOUT] Restored {len(state.inners)} rooms, "
+              f"{len(state.doors)} doors, {len(state.windows)} windows")
+        return bool(state.inners or state.doors or state.windows)
+    except Exception as e:
+        print(f"[LAYOUT] Load failed: {e}")
+        return False
+
 
 # ---------- UTIL ----------
 def load_image(path):
@@ -96,118 +183,224 @@ def extract_room_image(poly):
 
 # ---------- MODERN UI DESIGN ----------
 root = tk.Tk()
-root.title("Floor Plan Editor")
-root.geometry("1400x900")
+root.title("Floor Plan Studio")
+root.geometry("1440x920")
+root.minsize(1180, 780)
 
-# Modern color scheme
-BG_COLOR = "#f5f5f5"
-PRIMARY_COLOR = "#0066cc"
-SECONDARY_COLOR = "#f0f0f0"
-TEXT_COLOR = "#333333"
-ACCENT_COLOR = "#ff6b35"
-DANGER_COLOR = "#ff6666"
-SUCCESS_COLOR = "#28a745"
+# Design tokens (light theme)
+BG_COLOR = "#eef1f5"          # app background
+SURFACE = "#ffffff"           # bars / cards
+SURFACE_ALT = "#f8fafc"       # secondary bar
+BORDER = "#e2e8f0"
+TEXT_COLOR = "#1f2937"
+TEXT_MUTED = "#64748b"
+PRIMARY_COLOR = "#2563eb"; PRIMARY_HOVER = "#1d4ed8"
+SECONDARY_COLOR = "#eef1f5"; SECONDARY_HOVER = "#e2e8f0"
+SUCCESS_COLOR = "#16a34a"; SUCCESS_HOVER = "#15803d"
+DANGER_COLOR = "#dc2626"; DANGER_HOVER = "#b91c1c"
+ACCENT_COLOR = "#e11d48"; ACCENT_HOVER = "#be123c"
+PURPLE_COLOR = "#7c3aed"; PURPLE_HOVER = "#6d28d9"
+
+# Canvas drawing palette
+ROOM_COLORS = ["#16a34a", "#2563eb", "#d97706", "#7c3aed",
+               "#0d9488", "#db2777", "#65a30d", "#dc2626"]
+DOOR_COLOR = "#f97316"
+WINDOW_COLOR = "#0ea5e9"
 
 root.configure(bg=BG_COLOR)
 
-# Top toolbar with horizontal layout
-top_toolbar = tk.Frame(root, bg="white", height=70)
-top_toolbar.pack(side=tk.TOP, fill=tk.X, padx=0, pady=0)
-top_toolbar.pack_propagate(False)
 
-# Title
-title_label = tk.Label(top_toolbar, text="Floor Plan Editor", font=("Segoe UI", 18, "bold"), 
-                       bg="white", fg=TEXT_COLOR)
-title_label.pack(side=tk.LEFT, padx=20, pady=15)
+def make_btn(parent, text, bg, hover, fg="white", command=None, font_size=10, **kw):
+    """Flat button with hover feedback (consistent across the app)."""
+    btn = tk.Button(parent, text=text, font=("Segoe UI", font_size, "bold"),
+                    bg=bg, fg=fg, relief=tk.FLAT, bd=0, padx=14, pady=8,
+                    cursor="hand2", activebackground=hover, activeforeground=fg,
+                    command=command, **kw)
+    btn._base_bg = bg
+    btn.bind("<Enter>", lambda e: btn.config(bg=hover))
+    btn.bind("<Leave>", lambda e: btn.config(bg=btn._base_bg))
+    return btn
 
-# Mode buttons in horizontal layout
-mode_frame = tk.Frame(top_toolbar, bg="white")
-mode_frame.pack(side=tk.LEFT, padx=20, pady=10)
 
-tk.Label(mode_frame, text="Draw Mode:", font=("Segoe UI", 11, "bold"), 
-         bg="white", fg=TEXT_COLOR).pack(side=tk.LEFT, padx=(0, 15))
+# ===== Header row 1: identity + primary actions =====
+header = tk.Frame(root, bg=SURFACE)
+header.pack(side=tk.TOP, fill=tk.X)
+
+title_box = tk.Frame(header, bg=SURFACE)
+title_box.pack(side=tk.LEFT, padx=(20, 10), pady=10)
+tk.Label(title_box, text="🏠 Floor Plan Studio", font=("Segoe UI", 16, "bold"),
+         bg=SURFACE, fg=TEXT_COLOR).pack(anchor="w")
+tk.Label(title_box, text="Draw rooms → assign a style → generate and explore an AI 3D interior",
+         font=("Segoe UI", 9), bg=SURFACE, fg=TEXT_MUTED).pack(anchor="w")
+
+action_frame = tk.Frame(header, bg=SURFACE)
+action_frame.pack(side=tk.RIGHT, padx=20, pady=10)
+
+# ===== Header row 2: drawing workflow =====
+workflow = tk.Frame(root, bg=SURFACE_ALT)
+workflow.pack(side=tk.TOP, fill=tk.X)
+tk.Frame(root, bg=BORDER, height=1).pack(side=tk.TOP, fill=tk.X)
+
+mode_frame = tk.Frame(workflow, bg=SURFACE_ALT)
+mode_frame.pack(side=tk.LEFT, padx=20, pady=8)
+
+tk.Label(mode_frame, text="DRAW", font=("Segoe UI", 9, "bold"),
+         bg=SURFACE_ALT, fg=TEXT_MUTED).pack(side=tk.LEFT, padx=(0, 12))
 
 mode_buttons = {}
+MODE_LABELS = {"inner": "①  Rooms", "door": "②  Doors", "window": "③  Windows"}
+MODE_HINTS = {
+    "inner": "Click the corners of a room — click the first point again (or press Enter) to close it",
+    "door": "Click the two end points of a door opening on a wall — Esc cancels",
+    "window": "Click the two end points of a window on a wall — Esc cancels",
+}
 
-def create_mode_btn(text, mode_val):
-    btn = tk.Button(mode_frame, text=text, font=("Segoe UI", 10), 
-                    width=14, bg=SECONDARY_COLOR, fg=TEXT_COLOR,
-                    relief=tk.FLAT, padx=10, pady=6, activebackground=PRIMARY_COLOR,
-                    command=lambda: set_mode(mode_val))
-    btn.pack(side=tk.LEFT, padx=5)
+
+def create_mode_btn(mode_val):
+    btn = make_btn(mode_frame, MODE_LABELS[mode_val], SECONDARY_COLOR,
+                   SECONDARY_HOVER, fg=TEXT_COLOR,
+                   command=lambda: set_mode(mode_val))
+    btn.config(padx=16, pady=6)
+    btn.pack(side=tk.LEFT, padx=3)
     mode_buttons[mode_val] = btn
     return btn
 
-create_mode_btn("🔲 Rooms", "inner")
-create_mode_btn("🚪 Doors", "door")
-create_mode_btn("🪟 Windows", "window")
 
-# Action buttons on the right
-action_frame = tk.Frame(top_toolbar, bg="white")
-action_frame.pack(side=tk.RIGHT, padx=20, pady=10)
+for _m in ("inner", "door", "window"):
+    create_mode_btn(_m)
 
-# Status bar at bottom
-status_frame = tk.Frame(root, bg="white", height=40, relief=tk.RAISED, bd=1)
+tk.Frame(mode_frame, bg=BORDER, width=1, height=26).pack(side=tk.LEFT, padx=14)
+
+edit_frame = tk.Frame(workflow, bg=SURFACE_ALT)
+edit_frame.pack(side=tk.LEFT, pady=8)
+# Undo / Reset buttons are created after their functions are defined (see bottom)
+
+hint_lbl = tk.Label(workflow,
+                    text="Shortcuts:  1 / 2 / 3 switch tools  •  Ctrl+Z undo  •  Esc cancel  •  Enter close room",
+                    font=("Segoe UI", 9), bg=SURFACE_ALT, fg=TEXT_MUTED)
+hint_lbl.pack(side=tk.RIGHT, padx=20)
+
+# ===== Status bar =====
+status_frame = tk.Frame(root, bg=SURFACE)
 status_frame.pack(side=tk.BOTTOM, fill=tk.X)
-status_frame.pack_propagate(False)
+tk.Frame(root, bg=BORDER, height=1).pack(side=tk.BOTTOM, fill=tk.X)
 
-lbl_mode = tk.Label(status_frame, text="Mode: Rooms", font=("Segoe UI", 10),
-                    bg="white", fg=TEXT_COLOR)
-lbl_mode.pack(side=tk.LEFT, padx=20, pady=10)
+lbl_mode = tk.Label(status_frame, text="", font=("Segoe UI", 10, "bold"),
+                    bg=SURFACE, fg=PRIMARY_COLOR)
+lbl_mode.pack(side=tk.LEFT, padx=(20, 8), pady=8)
 
-lbl_info = tk.Label(status_frame, text="Click to add points", font=("Segoe UI", 9), fg="#666666")
-lbl_info.pack(side=tk.LEFT, padx=20, pady=10)
+lbl_info = tk.Label(status_frame, text="", font=("Segoe UI", 10),
+                    bg=SURFACE, fg=TEXT_MUTED)
+lbl_info.pack(side=tk.LEFT, padx=8, pady=8)
 
-# Canvas in the middle
-canvas = tk.Canvas(root, width=CANVAS_MAX_W, height=700, bg="#eeeeee", highlightthickness=0)
-canvas.pack(side=tk.TOP, fill=tk.BOTH, expand=True, padx=0, pady=0)
+lbl_saved = tk.Label(status_frame, text="", font=("Segoe UI", 9),
+                     bg=SURFACE, fg=SUCCESS_COLOR)
+lbl_saved.pack(side=tk.RIGHT, padx=20, pady=8)
+
+lbl_counts = tk.Label(status_frame, text="", font=("Segoe UI", 10),
+                      bg=SURFACE, fg=TEXT_COLOR)
+lbl_counts.pack(side=tk.RIGHT, padx=12, pady=8)
+
+# ===== Canvas =====
+canvas = tk.Canvas(root, width=CANVAS_MAX_W, height=700, bg="#d7dde5",
+                   highlightthickness=0, cursor="crosshair")
+canvas.pack(side=tk.TOP, fill=tk.BOTH, expand=True)
+
 
 def set_mode(m):
     state.mode = m
     if m == "window":
         state.window_type = "normal"
-    
-    mode_text = {
-        "inner": "🔲 Rooms",
-        "door": "🚪 Doors",
-        "window": "🪟 Windows"
-    }
-    lbl_mode.config(text=f"Mode: {mode_text.get(m, m)}")
-    
-    # Visual feedback on buttons with checkmark
+    lbl_mode.config(text=MODE_LABELS[m].replace("  ", " "))
+    lbl_info.config(text=MODE_HINTS[m], fg=TEXT_MUTED)
     for mode_val, btn in mode_buttons.items():
         if mode_val == m:
-            btn.config(bg=PRIMARY_COLOR, fg="white", text=mode_text[mode_val] + " ✓")
+            btn._base_bg = PRIMARY_COLOR
+            btn.config(bg=PRIMARY_COLOR, fg="white")
         else:
-            text_clean = mode_text[mode_val].replace(" ✓", "")
-            btn.config(bg=SECONDARY_COLOR, fg=TEXT_COLOR, text=text_clean)
-    
+            btn._base_bg = SECONDARY_COLOR
+            btn.config(bg=SECONDARY_COLOR, fg=TEXT_COLOR)
     redraw()
 
-# ---------- UNDO ----------
+# ---------- UNDO / RESET / CANCEL ----------
 def undo():
     if not state.undo_stack:
-        messagebox.showinfo("Info", "Nothing to undo")
+        lbl_info.config(text="Nothing to undo", fg=TEXT_MUTED)
         return
 
-    action, data = state.undo_stack.pop()
+    action, _data = state.undo_stack.pop()
 
-    if action == "outer_point":
-        state.outer.pop()
-    elif action == "outer_close":
-        state.outer_closed = False
-    elif action == "inner_point":
+    if action == "inner_point" and state.current_inner:
         state.current_inner.pop()
-    elif action == "inner_finish":
+    elif action == "inner_finish" and state.inners:
         last = state.inners.pop()
         state.current_inner = last
-        state.room_segments.pop(f"Room {len(state.inners)+1}", None)
-    elif action == "door":
+        state.room_segments.pop(f"Room {len(state.inners) + 1}", None)
+    elif action == "door" and state.doors:
         state.doors.pop()
-    elif action == "window":
+    elif action == "window" and state.windows:
         state.windows.pop()
 
+    save_layout()
     redraw()
+
+
+def cancel_current(event=None):
+    """Esc / right-click: abandon the shape currently being drawn."""
+    global mouse_start
+    changed = False
+    if mouse_start is not None:
+        mouse_start = None
+        changed = True
+    if state.current_inner:
+        while state.undo_stack and state.undo_stack[-1][0] == "inner_point":
+            state.undo_stack.pop()
+        state.current_inner = []
+        changed = True
+    canvas.delete("preview")
+    if changed:
+        lbl_info.config(text="Cancelled", fg=TEXT_MUTED)
+        redraw()
+
+
+def finish_room(event=None):
+    """Close the room polygon currently being drawn (Enter or first-point click)."""
+    if len(state.current_inner) < 3:
+        return
+    poly = state.current_inner[:]
+    state.inners.append(poly)
+    room_id = len(state.inners)
+    state.room_segments[f"Room {room_id}"] = poly
+    state.undo_stack.append(("inner_finish", None))
+    state.current_inner = []
+    lbl_info.config(text=f"✓ Room {room_id} created — draw another, "
+                         f"or press 2 to add doors", fg=SUCCESS_COLOR)
+    save_layout()
+    redraw()
+
+
+def reset_all():
+    """Clear the whole plan (with confirmation) — including the saved layout."""
+    global mouse_start
+    if not (state.inners or state.doors or state.windows or state.current_inner):
+        lbl_info.config(text="Nothing to reset", fg=TEXT_MUTED)
+        return
+    if not messagebox.askyesno(
+            "Reset Plan",
+            "Clear ALL rooms, doors and windows?\n\n"
+            "The autosaved layout will be cleared too."):
+        return
+    state.inners = []
+    state.room_segments = {}
+    state.doors = []
+    state.windows = []
+    state.current_inner = []
+    state.undo_stack = []
+    mouse_start = None
+    save_layout(allow_empty=True)   # explicit clear may write an empty file
+    redraw()
+    set_mode("inner")
+    lbl_info.config(text="Plan cleared — draw the first room", fg=TEXT_MUTED)
 
 # ---------- DRAW ----------
 def redraw():
@@ -219,23 +412,38 @@ def redraw():
     canvas.image = imtk
     canvas.create_image(0, 0, anchor="nw", image=imtk)
 
-    def draw_poly(poly, col):
-        pts = [img2canvas(p) for p in poly]
-        if len(pts) > 1:
-            canvas.create_line(*sum(pts, ()), fill=col, width=2)
-        for x, y in pts:
-            canvas.create_oval(x-4, y-4, x+4, y+4, fill="white")
+    # finished rooms: tinted fill, colored outline, centered label
+    for idx, poly in enumerate(state.inners):
+        col = ROOM_COLORS[idx % len(ROOM_COLORS)]
+        pts = [c for p in poly for c in img2canvas(p)]
+        if len(poly) > 2:
+            canvas.create_polygon(*pts, fill=col, stipple="gray12",
+                                  outline=col, width=2)
+            cx = sum(img2canvas(p)[0] for p in poly) / len(poly)
+            cy = sum(img2canvas(p)[1] for p in poly) / len(poly)
+            canvas.create_text(cx, cy, text=f"Room {idx + 1}",
+                               font=("Segoe UI", 11, "bold"), fill=col)
 
-    for p in state.inners:
-        draw_poly(p, "#00aa33")
-    draw_poly(state.current_inner, "#00aa33")
+    # room being drawn: polyline + vertex handles (first point emphasized)
+    cur = [img2canvas(p) for p in state.current_inner]
+    if len(cur) > 1:
+        canvas.create_line(*sum(cur, ()), fill=PRIMARY_COLOR, width=2)
+    for i, (x, y) in enumerate(cur):
+        r = 6 if i == 0 else 4
+        canvas.create_oval(x - r, y - r, x + r, y + r, fill="white",
+                           outline=PRIMARY_COLOR, width=2)
 
     for p1, p2 in state.doors:
-        canvas.create_line(*img2canvas(p1), *img2canvas(p2), fill="#ff8800", width=6)
+        canvas.create_line(*img2canvas(p1), *img2canvas(p2), fill=DOOR_COLOR,
+                           width=7, capstyle=tk.ROUND)
 
     for p1, p2, t in state.windows:
-        color = "#00cccc" if t == "normal" else "#0099ff"
-        canvas.create_line(*img2canvas(p1), *img2canvas(p2), fill=color, width=8)
+        canvas.create_line(*img2canvas(p1), *img2canvas(p2), fill=WINDOW_COLOR,
+                           width=7, capstyle=tk.ROUND)
+
+    lbl_counts.config(text=f"Rooms {len(state.inners)}   •   "
+                           f"Doors {len(state.doors)}   •   "
+                           f"Windows {len(state.windows)}")
 
 # ---------- INPUT ----------
 mouse_start = None
@@ -244,58 +452,64 @@ def click(e):
     pt = canvas2img((e.x, e.y))
 
     if state.mode == "inner":
-        if state.current_inner and dist(img2canvas(state.current_inner[0]), (e.x, e.y)) < POLYGON_CLOSE_DIST:
-            poly = state.current_inner[:]
-            state.inners.append(poly)
-
-            room_id = len(state.inners)
-            state.room_segments[f"Room {room_id}"] = poly
-
-            state.undo_stack.append(("inner_finish", None))
-            state.current_inner = []
-            lbl_info.config(text=f"✓ Room {room_id} created")
+        if (len(state.current_inner) >= 3 and
+                dist(img2canvas(state.current_inner[0]), (e.x, e.y)) < POLYGON_CLOSE_DIST):
+            finish_room()
         else:
             state.current_inner.append(pt)
             state.undo_stack.append(("inner_point", None))
-            lbl_info.config(text=f"Room points: {len(state.current_inner)}")
-        redraw()
+            n = len(state.current_inner)
+            if n < 3:
+                lbl_info.config(text=f"Room outline: {n} point{'s' if n > 1 else ''}",
+                                fg=TEXT_MUTED)
+            else:
+                lbl_info.config(text=f"Room outline: {n} points — click the first "
+                                     f"point (or press Enter) to close",
+                                fg=PRIMARY_COLOR)
+            redraw()
 
     elif state.mode in ("door", "window"):
         if mouse_start is None:
             mouse_start = pt
-            mode_icon = "🚪" if state.mode == "door" else "🪟"
-            lbl_info.config(text=f"{mode_icon} Click end point to finish", fg="#ff8800")
+            what = "door" if state.mode == "door" else "window"
+            lbl_info.config(text=f"Now click the other end of the {what}",
+                            fg=PRIMARY_COLOR)
         else:
             if state.mode == "door":
                 state.doors.append((mouse_start, pt))
                 state.undo_stack.append(("door", None))
-                lbl_info.config(text=f"✓ Door added! ({len(state.doors)} total)", fg="#28a745")
+                lbl_info.config(text=f"✓ Door {len(state.doors)} added — add more, "
+                                     f"or press 3 for windows", fg=SUCCESS_COLOR)
             else:
                 state.windows.append((mouse_start, pt, state.window_type))
                 state.undo_stack.append(("window", None))
-                lbl_info.config(text=f"✓ Window added! ({len(state.windows)} total)", fg="#28a745")
+                lbl_info.config(text=f"✓ Window {len(state.windows)} added — "
+                                     f"ready for the 3D Walkthrough", fg=SUCCESS_COLOR)
             mouse_start = None
+            save_layout()
             redraw()
 
 canvas.bind("<Button-1>", click)
 
-# Add motion tracking for better UX
+# Live previews while drawing
 def on_motion(e):
-    if state.mode in ("door", "window") and mouse_start is not None:
-        pt = canvas2img((e.x, e.y))
-        canvas.delete("preview_line")
-        
-        p1_canvas = img2canvas(mouse_start)
-        p2_canvas = (e.x, e.y)
-        
-        color = "#ff8800" if state.mode == "door" else "#00cccc"
-        canvas.create_line(*p1_canvas, *p2_canvas, fill=color, width=8, dash=(4, 4), tags="preview_line")
-        
-        # Show length
-        dist_px = math.hypot(pt[0] - mouse_start[0], pt[1] - mouse_start[1])
-        lbl_info.config(text=f"Length: {dist_px:.1f}px", fg="#0066cc")
+    canvas.delete("preview")
+    if state.mode == "inner" and state.current_inner:
+        x0, y0 = img2canvas(state.current_inner[-1])
+        canvas.create_line(x0, y0, e.x, e.y, fill=PRIMARY_COLOR, width=2,
+                           dash=(5, 4), tags="preview")
+        if len(state.current_inner) >= 3:
+            fx, fy = img2canvas(state.current_inner[0])
+            if dist((fx, fy), (e.x, e.y)) < POLYGON_CLOSE_DIST:
+                canvas.create_oval(fx - 11, fy - 11, fx + 11, fy + 11,
+                                   outline=SUCCESS_COLOR, width=3, tags="preview")
+    elif state.mode in ("door", "window") and mouse_start is not None:
+        color = DOOR_COLOR if state.mode == "door" else WINDOW_COLOR
+        canvas.create_line(*img2canvas(mouse_start), e.x, e.y, fill=color,
+                           width=7, dash=(6, 4), capstyle=tk.ROUND, tags="preview")
 
 canvas.bind("<Motion>", on_motion)
+canvas.bind("<Button-3>", cancel_current)
 
 
 # ---------- AI DESIGN GENERATOR FUNCTION ----------
@@ -342,7 +556,8 @@ def generate_ai_interior_design(entry: DesignEntry):
             has_doors=entry.has_doors,
             has_windows=entry.has_windows,
             visible_openings=entry.visible_openings,
-            camera_params=entry.camera_params
+            camera_params=entry.camera_params,
+            styles=[entry.style]
         )
         
         print(f"[INFO] AI generation complete, results: {len(results) if results else 0}")
@@ -912,6 +1127,22 @@ def open_room_viewer():
             room_only=True
         )
 
+    def walk_room_3d(name):
+        """Furnished real-scale walkthrough of a single room."""
+        import plan_walkthrough
+        room_type, style = "Living Room", "Modern"
+        try:
+            for d in load_metadata().get("designs", []):
+                if d.get("room_name") == name:
+                    room_type = d.get("room_type", room_type)
+                    style = d.get("style", style)
+        except Exception:
+            pass
+        plan_walkthrough.launch_walkthrough(
+            [state.room_segments[name]], state.doors, state.windows,
+            px_per_m=None,
+            room_configs=[dict(room_type=room_type, style=style, name=name)])
+
     # Room list
     for name in state.room_segments.keys():
         room_frame = tk.Frame(sidebar, bg="white", relief=tk.FLAT)
@@ -938,32 +1169,308 @@ def open_room_viewer():
 
         # Buttons frame - row 2
         btn_frame2 = tk.Frame(room_frame, bg="white")
-        btn_frame2.pack(fill=tk.X, padx=10, pady=(3, 10))
+        btn_frame2.pack(fill=tk.X, padx=10, pady=3)
 
-        tk.Button(btn_frame2, text="� Capture Perspective", font=("Segoe UI", 9), width=26,
+        tk.Button(btn_frame2, text="🚶 Walkthrough", font=("Segoe UI", 9), width=26,
+                  bg="#6f42c1", fg="white", relief=tk.FLAT, cursor="hand2",
+                  command=lambda n=name: walk_room_3d(n)).pack(fill=tk.X, padx=2)
+
+        # Buttons frame - row 3
+        btn_frame3 = tk.Frame(room_frame, bg="white")
+        btn_frame3.pack(fill=tk.X, padx=10, pady=(3, 10))
+
+        tk.Button(btn_frame3, text="� Capture Perspective", font=("Segoe UI", 9), width=26,
                   bg=SUCCESS_COLOR, fg="white", relief=tk.FLAT, cursor="hand2",
                   command=lambda n=name: take_room_perspective_screenshot(state.room_segments[n], n)).pack(fill=tk.X, padx=2)
 
-# Create action buttons now that functions are defined
-tk.Button(action_frame, text="↶ Undo", font=("Segoe UI", 10), width=10,
-          bg=DANGER_COLOR, fg="white", relief=tk.FLAT, padx=10, pady=6,
-          activebackground="#ff4444", cursor="hand2",
-          command=undo).pack(side=tk.LEFT, padx=5)
+# ---------- AUTO-DETECT ROOMS & DOORS FROM THE PLAN IMAGE ----------
+def auto_detect_plan():
+    """Extract rooms and doors from the plan image — no drawing needed."""
+    if state.inners and not messagebox.askyesno(
+            "Auto-Detect",
+            "Replace the current rooms & doors with auto-detected ones?"):
+        return
+    try:
+        import plan_autodetect
+        rooms, doors = plan_autodetect.detect_rooms_and_doors(state.orig_img_cv)
+    except Exception as e:
+        import traceback
+        traceback.print_exc()
+        messagebox.showerror("Auto-Detect", f"Detection failed:\n{e}")
+        return
+    if not rooms:
+        messagebox.showerror(
+            "Auto-Detect", "No rooms could be detected in this plan image.\n"
+                           "You can still draw them manually.")
+        return
+    state.inners = [[tuple(p) for p in poly] for poly in rooms]
+    state.room_segments = {f"Room {i + 1}": poly
+                           for i, poly in enumerate(state.inners)}
+    state.doors = [(tuple(a), tuple(b)) for a, b in doors]
+    state.current_inner = []
+    state.undo_stack.clear()
+    save_layout()
+    redraw()
+    lbl_info.config(text=f"✓ Auto-detected {len(rooms)} rooms, "
+                         f"{len(doors)} doors", fg="#28a745")
+    messagebox.showinfo(
+        "Auto-Detect",
+        f"Detected {len(rooms)} rooms and {len(doors)} doors.\n\n"
+        "Add windows (or adjust) if you like, then click 3D Walkthrough.")
 
-tk.Button(action_frame, text="📂 View Rooms", font=("Segoe UI", 10), width=12,
-          bg=PRIMARY_COLOR, fg="white", relief=tk.FLAT, padx=10, pady=6,
-          activebackground="#0052a3", cursor="hand2",
-          command=open_room_viewer).pack(side=tk.LEFT, padx=5)
 
-tk.Button(action_frame, text="🎨 Gallery", font=("Segoe UI", 10), width=10,
-          bg=ACCENT_COLOR, fg="white", relief=tk.FLAT, padx=10, pady=6,
-          activebackground="#d83a50", cursor="hand2",
-          command=open_design_gallery).pack(side=tk.LEFT, padx=5)
+# ---------- 3D WALKTHROUGH (2D plan -> furnished 3D model you can walk) ----------
+def open_walkthrough_dialog():
+    """Configure and launch the AI-composed, walkable 3D interior."""
+    if not state.room_segments:
+        messagebox.showinfo("No rooms", "Draw at least one room first")
+        return
 
-# Initialize with "outer" mode selected
-set_mode("inner")
+    import plan_walkthrough
+
+    room_types = ["Living Room", "Bedroom", "Kitchen", "Bathroom",
+                  "Office", "Dining Room"]
+    styles = ["Modern Minimalist", "Scandinavian", "Industrial", "Bohemian",
+              "Mid-Century Modern", "Contemporary", "Traditional", "Japandi",
+              "Modern", "Minimalist", "Classic", "Boho"]
+
+    # Default each room to the preferences of its latest gallery design
+    saved_prefs = {}
+    try:
+        for d in load_metadata().get("designs", []):
+            saved_prefs[d.get("room_name")] = (
+                d.get("room_type", "Living Room"), d.get("style", "Modern"))
+    except Exception:
+        pass
+
+    dlg = tk.Toplevel(root)
+    dlg.title("AI 3D Interior Walkthrough")
+    dlg.configure(bg=BG_COLOR)
+    dlg.transient(root)
+    dlg.grab_set()
+    dlg.resizable(False, True)
+    dlg.minsize(660, 560)
+    dlg.maxsize(760, max(620, root.winfo_screenheight() - 80))
+    dlg.geometry(f"+{root.winfo_x() + 260}+{root.winfo_y() + 90}")
+
+    # Header band
+    head = tk.Frame(dlg, bg=SURFACE)
+    head.pack(fill=tk.X)
+    tk.Label(head, text="AI 3D Interior Walkthrough", font=("Segoe UI", 17, "bold"),
+             bg=SURFACE, fg=TEXT_COLOR).pack(anchor="w", padx=24, pady=(18, 3))
+    tk.Label(head, text="Turn the floor plan into a coordinated interior you can explore.",
+             font=("Segoe UI", 10), bg=SURFACE, fg=TEXT_MUTED,
+             justify=tk.LEFT).pack(anchor="w", padx=24, pady=(0, 12))
+    steps = tk.Frame(head, bg=SURFACE)
+    steps.pack(fill=tk.X, padx=24, pady=(0, 16))
+    for label, color in (("1  Assign rooms", PRIMARY_COLOR),
+                         ("2  AI composes", PURPLE_COLOR),
+                         ("3  Walk through", SUCCESS_COLOR)):
+        tk.Label(steps, text=label, font=("Segoe UI", 9, "bold"),
+                 bg="#f1f5f9", fg=color, padx=10, pady=5).pack(
+                     side=tk.LEFT, padx=(0, 8))
+    tk.Frame(dlg, bg=BORDER, height=1).pack(fill=tk.X)
+
+    body = tk.Frame(dlg, bg=BG_COLOR)
+    body.pack(fill=tk.BOTH, expand=True, padx=24, pady=18)
+
+    global_card = tk.Frame(body, bg=SURFACE, highlightbackground=BORDER,
+                           highlightthickness=1)
+    global_card.pack(fill=tk.X, pady=(0, 14))
+    tk.Label(global_card, text="DESIGN DIRECTION", font=("Segoe UI", 8, "bold"),
+             bg=SURFACE, fg=TEXT_MUTED).grid(row=0, column=0, columnspan=3,
+                                             sticky="w", padx=12, pady=(10, 5))
+    profile_var = tk.StringVar(value="Curated")
+    ttk.Combobox(global_card, textvariable=profile_var,
+                 values=["Airy", "Curated", "Layered"], width=14,
+                 state="readonly", font=("Segoe UI", 10)).grid(
+                     row=1, column=0, padx=(12, 8), pady=(0, 11), sticky="w")
+    tk.Label(global_card, text="Airy: essentials  •  Curated: balanced  •  Layered: richer decor",
+             font=("Segoe UI", 9), bg=SURFACE, fg=TEXT_MUTED).grid(
+                 row=1, column=1, padx=(0, 12), pady=(0, 11), sticky="w")
+
+    # Column headers
+    hdr = tk.Frame(body, bg=BG_COLOR)
+    hdr.pack(fill=tk.X, pady=(0, 6))
+    tk.Label(hdr, text="ROOM", width=12, anchor="w", font=("Segoe UI", 8, "bold"),
+             bg=BG_COLOR, fg=TEXT_MUTED).pack(side=tk.LEFT, padx=(4, 8))
+    tk.Label(hdr, text="TYPE", width=15, anchor="w", font=("Segoe UI", 8, "bold"),
+             bg=BG_COLOR, fg=TEXT_MUTED).pack(side=tk.LEFT, padx=4)
+    tk.Label(hdr, text="STYLE", width=20, anchor="w", font=("Segoe UI", 8, "bold"),
+             bg=BG_COLOR, fg=TEXT_MUTED).pack(side=tk.LEFT, padx=4)
+
+    room_vars = []  # (name, type_var, style_var)
+    for idx, name in enumerate(state.room_segments.keys()):
+        def_type, def_style = saved_prefs.get(name, ("Living Room", "Modern"))
+        row = tk.Frame(body, bg=SURFACE, highlightbackground=BORDER,
+                       highlightthickness=1)
+        row.pack(fill=tk.X, pady=3)
+        swatch = ROOM_COLORS[idx % len(ROOM_COLORS)]
+        chip = tk.Frame(row, bg=SURFACE)
+        chip.pack(side=tk.LEFT, padx=(10, 0), pady=9)
+        tk.Label(chip, text="●", font=("Segoe UI", 11), bg=SURFACE,
+                 fg=swatch).pack(side=tk.LEFT)
+        tk.Label(chip, text=name, width=9, anchor="w",
+                 font=("Segoe UI", 10, "bold"), bg=SURFACE,
+                 fg=TEXT_COLOR).pack(side=tk.LEFT, padx=(4, 0))
+        tvar = tk.StringVar(value=def_type if def_type in room_types else "Living Room")
+        ttk.Combobox(row, textvariable=tvar, values=room_types, width=15,
+                     font=("Segoe UI", 10), state="readonly").pack(side=tk.LEFT, padx=6)
+        svar = tk.StringVar(value=def_style if def_style in styles else "Modern")
+        ttk.Combobox(row, textvariable=svar, values=styles, width=20,
+                     font=("Segoe UI", 10), state="readonly").pack(side=tk.LEFT, padx=6)
+        room_vars.append((name, tvar, svar))
+
+    apply_row = tk.Frame(body, bg=BG_COLOR)
+    apply_row.pack(fill=tk.X, pady=(10, 4))
+    apply_style_var = tk.StringVar(value="Modern")
+    ttk.Combobox(apply_row, textvariable=apply_style_var, values=styles, width=22,
+                 state="readonly", font=("Segoe UI", 9)).pack(side=tk.LEFT)
+
+    def apply_style_to_all():
+        for _name, _tvar, svar in room_vars:
+            svar.set(apply_style_var.get())
+
+    make_btn(apply_row, "Apply style to all rooms", SECONDARY_COLOR,
+             SECONDARY_HOVER, fg=TEXT_COLOR, command=apply_style_to_all,
+             font_size=9).pack(side=tk.LEFT, padx=8)
+
+    ai_asset_card = tk.Frame(body, bg=SURFACE, highlightbackground=BORDER,
+                             highlightthickness=1)
+    ai_asset_card.pack(fill=tk.X, pady=(12, 0))
+    local_ai_var = tk.BooleanVar(value=True)
+    tk.Checkbutton(ai_asset_card,
+                   text="Local AI furniture — generate real 3D meshes offline",
+                   variable=local_ai_var, font=("Segoe UI", 10, "bold"),
+                   bg=SURFACE, fg=TEXT_COLOR, selectcolor=SURFACE,
+                   activebackground=SURFACE, cursor="hand2").pack(
+                       anchor="w", padx=10, pady=(9, 1))
+    try:
+        import local_3d_ai
+        _local_ready, _local_status = local_3d_ai.runtime_status()
+    except Exception as _local_error:
+        _local_ready, _local_status = False, str(_local_error)
+    tk.Label(ai_asset_card,
+             text=("FLUX creates furniture from your style; TripoSR converts it "
+                   "to cached GLB objects. " + _local_status),
+             font=("Segoe UI", 9), bg=SURFACE,
+             fg=SUCCESS_COLOR if _local_ready else TEXT_MUTED,
+             wraplength=590, justify=tk.LEFT).pack(
+                 anchor="w", padx=14, pady=(0, 9))
+
+    explore_card = tk.Frame(body, bg=SURFACE, highlightbackground=BORDER,
+                            highlightthickness=1)
+    explore_card.pack(fill=tk.X, pady=(8, 0))
+    wall_pass_var = tk.BooleanVar(value=True)
+    tk.Checkbutton(explore_card, text="Free explore — allow walking through walls",
+                   variable=wall_pass_var, font=("Segoe UI", 10, "bold"),
+                   bg=SURFACE, fg=TEXT_COLOR, selectcolor=SURFACE,
+                   activebackground=SURFACE, cursor="hand2").pack(
+                       anchor="w", padx=10, pady=(9, 1))
+    tk.Label(explore_card,
+             text="Press G while walking to switch between pass-through walls and doorways.",
+             font=("Segoe UI", 9), bg=SURFACE, fg=TEXT_MUTED).pack(
+                 anchor="w", padx=14, pady=(0, 9))
+
+    def launch(only_room=None):
+        configs, rooms = [], []
+        variation = os.urandom(4).hex()
+        for name, tvar, svar in room_vars:
+            if only_room and name != only_room:
+                continue
+            rooms.append(state.room_segments[name])
+            configs.append(dict(room_type=tvar.get(), style=svar.get(), name=name,
+                                design_profile=profile_var.get(),
+                                design_seed=variation,
+                                use_local_ai=local_ai_var.get()))
+        dlg.destroy()
+        loading = tk.Toplevel(root)
+        loading.title("Creating AI interior")
+        loading.configure(bg=SURFACE)
+        loading.transient(root)
+        loading.resizable(False, False)
+        loading.geometry(f"480x175+{root.winfo_x() + 480}+{root.winfo_y() + 260}")
+        tk.Label(loading, text="Composing your AI 3D interior…",
+                 font=("Segoe UI", 14, "bold"), bg=SURFACE,
+                 fg=TEXT_COLOR).pack(pady=(28, 6))
+        loading_status = tk.StringVar(
+            value="Planning furniture, decor, lighting and clear walking paths")
+        tk.Label(loading, textvariable=loading_status,
+                 font=("Segoe UI", 9), bg=SURFACE, fg=TEXT_MUTED,
+                 wraplength=430, justify=tk.CENTER).pack()
+        loading.update()
+
+        def update_loading(message):
+            loading_status.set(message)
+            loading.update()
+
+        try:
+            if local_ai_var.get():
+                try:
+                    import local_3d_ai
+                    local_3d_ai.prepare_local_assets(
+                        configs, progress=update_loading)
+                except Exception as local_error:
+                    for config in configs:
+                        config["use_local_ai"] = False
+                    messagebox.showwarning(
+                        "Local AI furniture unavailable",
+                        f"{local_error}\n\nThe walkthrough will open with the "
+                        "procedural fallback. Your floor plan is unchanged.")
+            update_loading("Assembling the measured apartment and AI furniture…")
+            plan_walkthrough.launch_walkthrough(
+                rooms, state.doors, state.windows, px_per_m=None,
+                room_configs=configs, furnished=True,
+                wall_pass=wall_pass_var.get())
+        finally:
+            if loading.winfo_exists():
+                loading.destroy()
+
+    # Footer
+    tk.Frame(dlg, bg=BORDER, height=1).pack(fill=tk.X)
+    btns = tk.Frame(dlg, bg=SURFACE)
+    btns.pack(fill=tk.X)
+    inner = tk.Frame(btns, bg=SURFACE)
+    inner.pack(anchor="e", padx=20, pady=14)
+    make_btn(inner, "Cancel", SECONDARY_COLOR, SECONDARY_HOVER, fg=TEXT_COLOR,
+             command=dlg.destroy).pack(side=tk.LEFT, padx=6)
+    make_btn(inner, "Generate & start walkthrough", PURPLE_COLOR, PURPLE_HOVER,
+             command=launch, font_size=11).pack(side=tk.LEFT, padx=6)
+
+
+# ---------- TOOLBAR BUTTONS (created after their commands exist) ----------
+# Edit tools (workflow bar)
+make_btn(edit_frame, "↶  Undo", SECONDARY_COLOR, SECONDARY_HOVER, fg=TEXT_COLOR,
+         command=undo).pack(side=tk.LEFT, padx=3)
+make_btn(edit_frame, "🗑  Reset", "#fee2e2", "#fecaca", fg=DANGER_COLOR,
+         command=reset_all).pack(side=tk.LEFT, padx=3)
+
+# Primary actions (header, right side; packed right-to-left)
+make_btn(action_frame, "✦  AI 3D Walkthrough", PURPLE_COLOR, PURPLE_HOVER,
+         command=open_walkthrough_dialog, font_size=11).pack(side=tk.RIGHT,
+                                                             padx=(8, 0))
+make_btn(action_frame, "🎨  Gallery", ACCENT_COLOR, ACCENT_HOVER,
+         command=open_design_gallery).pack(side=tk.RIGHT, padx=4)
+make_btn(action_frame, "📂  Rooms", PRIMARY_COLOR, PRIMARY_HOVER,
+         command=open_room_viewer).pack(side=tk.RIGHT, padx=4)
+make_btn(action_frame, "🪄  Auto-Detect", SECONDARY_COLOR, SECONDARY_HOVER,
+         fg=TEXT_COLOR, command=auto_detect_plan).pack(side=tk.RIGHT, padx=4)
+
+# ---------- KEYBOARD SHORTCUTS ----------
+root.bind("<Control-z>", lambda e: undo())
+root.bind("<Escape>", cancel_current)
+root.bind("<Return>", finish_room)
+root.bind("1", lambda e: set_mode("inner"))
+root.bind("2", lambda e: set_mode("door"))
+root.bind("3", lambda e: set_mode("window"))
 
 # ---------- START ----------
+set_mode("inner")
 load_image(IMAGE_PATH)
+if load_layout():
+    lbl_info.config(text=f"✓ Restored saved plan: {len(state.inners)} rooms, "
+                         f"{len(state.doors)} doors, {len(state.windows)} windows "
+                         f"— no need to redraw",
+                    fg=SUCCESS_COLOR)
 redraw()
 root.mainloop()
