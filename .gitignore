@@ -4,12 +4,25 @@ __pycache__/
 # Generated/debug images
 debug_*.png
 test_output.png
+_app.log
+plan/_autodetect_overlay.png
 
 # Generated outputs
 plan/output/
 seg_output/
 room_designs/ai_generated/
 room_designs/screenshots/
+room_designs/local_3d_assets/
+
+# Local AI runtimes and downloaded model caches
+.triposr_venv/
+hf_cache/
+models/TripoSR/model.ckpt
+models/TripoSR/_download_parts/
+
+# TripoSR demo media is not needed by the local runtime
+vendor/TripoSR/examples/
+vendor/TripoSR/figures/
 
 # OS/editor files
 .DS_Store
