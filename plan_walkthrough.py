@@ -1,19 +1,15 @@
 """
 2D plan -> furnished 3D walkthrough.
 
-Pipeline (2D-to-3D-first, then furnish — chosen because the FLUX image model
-can only produce 2D pictures, while this gives a true walkable model that
-respects the drawn plan exactly):
+Pipeline (2D-to-3D-first, then furnish — a deterministic approach that gives a
+true walkable model and respects the drawn plan exactly):
 
   1. Convert the drawn room polygons / doors / windows to REAL-WORLD meters
      (100 px = 1 m, no artistic scaling), and build walls with door and
      window openings cut out (reusing plan3d's realistic door/window meshes).
-  2. Procedurally furnish every room from its room type (Living Room,
-     Bedroom, Kitchen, ...) and design style (Modern, Scandinavian, Japandi,
-     ... — the same styles the AI design gallery uses), including floors,
-     rugs, sofas, beds, kitchens, art, plants and lighting fixtures, all
-     placed with plan-aware rules (against free wall runs, never blocking a
-     door, never overlapping each other, always inside the room).
+  2. Apply the user's style, color mood, flooring, wall finish and personal
+     brief to architecture, material palette, focal wall, ceiling detail,
+     window treatment, lighting, furniture and decor.
   3. First-person walkthrough: WASD to walk, arrow keys to look around.
      Collision keeps you inside the apartment and lets you pass between
      rooms only through doors.
@@ -58,7 +54,7 @@ MIN_WINDOW_W = 0.7
 OPENING_EDGE_TOL = 0.6     # door/window is assigned to every wall closer than this
 WALL_GAP = 0.16            # furniture stand-off from the wall line
 
-SCALE_BOOST = 1.3          # enlarge the building shell relative to the walker
+SCALE_BOOST = 1.15         # enlarge the building shell relative to the walker
                            # (rooms feel bigger; furniture stays real-size)
 CAMERA_FOV = 75.0          # roomy field of view without fisheye distortion
 GHOST_MARGIN = 3.0         # keep free-explore mode close to the apartment
@@ -187,9 +183,140 @@ WHITE_SOFT = [0.93, 0.92, 0.90]
 SCREEN_DARK = [0.05, 0.05, 0.07]
 
 
-def get_palette(style_label):
+def _mix_color(base, generated, generated_weight):
+    base = np.asarray(base, dtype=float)
+    generated = np.asarray(generated, dtype=float)
+    return np.clip(
+        base * (1.0 - generated_weight) + generated * generated_weight,
+        0.03,
+        0.98,
+    ).tolist()
+
+
+MOOD_COLORS = {
+    "warm neutral": dict(
+        wall=[0.91, 0.86, 0.77], accent=[0.66, 0.43, 0.28],
+        secondary=[0.76, 0.69, 0.58],
+    ),
+    "cool neutral": dict(
+        wall=[0.88, 0.91, 0.92], accent=[0.35, 0.48, 0.56],
+        secondary=[0.67, 0.72, 0.74],
+    ),
+    "earthy natural": dict(
+        wall=[0.87, 0.82, 0.70], accent=[0.35, 0.46, 0.28],
+        secondary=[0.67, 0.54, 0.38],
+    ),
+    "light and airy": dict(
+        wall=[0.96, 0.95, 0.91], accent=[0.58, 0.67, 0.68],
+        secondary=[0.84, 0.82, 0.75],
+    ),
+    "monochrome": dict(
+        wall=[0.90, 0.90, 0.89], accent=[0.24, 0.25, 0.26],
+        secondary=[0.60, 0.60, 0.59],
+    ),
+    "bold accents": dict(
+        wall=[0.91, 0.89, 0.84], accent=[0.16, 0.36, 0.52],
+        secondary=[0.72, 0.47, 0.25],
+    ),
+}
+
+FLOOR_FINISH_COLORS = {
+    "light oak": [0.82, 0.72, 0.56],
+    "warm oak": [0.66, 0.47, 0.29],
+    "dark walnut": [0.31, 0.22, 0.16],
+    "natural stone": [0.69, 0.66, 0.59],
+    "polished concrete": [0.48, 0.49, 0.49],
+    "terrazzo": [0.76, 0.73, 0.67],
+    "large tile": [0.72, 0.70, 0.66],
+}
+
+WALL_FINISH_COLORS = {
+    "warm paint": [0.92, 0.86, 0.76],
+    "cool paint": [0.89, 0.92, 0.93],
+    "limewash": [0.84, 0.79, 0.69],
+    "wood slats": [0.78, 0.72, 0.62],
+    "panel moulding": [0.89, 0.87, 0.81],
+    "concrete": [0.63, 0.63, 0.61],
+    "accent color": [0.79, 0.72, 0.64],
+}
+
+BRIEF_COLOR_HINTS = {
+    "green": [0.29, 0.43, 0.29],
+    "olive": [0.39, 0.43, 0.23],
+    "blue": [0.25, 0.42, 0.58],
+    "navy": [0.14, 0.23, 0.37],
+    "terracotta": [0.68, 0.34, 0.22],
+    "rust": [0.58, 0.28, 0.17],
+    "burgundy": [0.39, 0.13, 0.18],
+    "mustard": [0.72, 0.52, 0.14],
+    "black": [0.11, 0.11, 0.12],
+}
+
+
+def get_palette(style_label, config=None):
     key = STYLE_ALIASES.get((style_label or "").lower().strip(), "modern")
-    return PALETTES.get(key, PALETTES["modern"])
+    palette = {
+        name: list(color)
+        for name, color in PALETTES.get(key, PALETTES["modern"]).items()
+    }
+    config = config or {}
+    mood = MOOD_COLORS.get(
+        str(config.get("color_mood", "Warm neutral")).lower()
+    )
+    if mood:
+        palette["wall"] = _mix_color(palette["wall"], mood["wall"], 0.34)
+        palette["accent"] = _mix_color(
+            palette["accent"], mood["accent"], 0.58
+        )
+        palette["cushion"] = _mix_color(
+            palette["cushion"], mood["accent"], 0.42
+        )
+        for name in ("sofa", "rug", "cabinet", "shade"):
+            palette[name] = _mix_color(
+                palette[name], mood["secondary"], 0.22
+            )
+
+    floor_finish = str(config.get("floor_finish", "Auto by style")).lower()
+    if floor_finish in FLOOR_FINISH_COLORS:
+        floor_color = FLOOR_FINISH_COLORS[floor_finish]
+        palette["floor"] = list(floor_color)
+        palette["wood"] = _mix_color(palette["wood"], floor_color, 0.72)
+        palette["wood_dark"] = _shade(floor_color, 0.58)
+
+    wall_finish = str(config.get("wall_finish", "Auto by style")).lower()
+    if wall_finish in WALL_FINISH_COLORS:
+        palette["wall"] = _mix_color(
+            palette["wall"], WALL_FINISH_COLORS[wall_finish], 0.72
+        )
+
+    brief = str(config.get("design_notes", "")).lower()
+    for word, color in BRIEF_COLOR_HINTS.items():
+        if word in brief:
+            palette["accent"] = _mix_color(palette["accent"], color, 0.76)
+            palette["cushion"] = _mix_color(palette["cushion"], color, 0.55)
+            break
+    if "walnut" in brief:
+        palette["wood"] = [0.36, 0.24, 0.16]
+        palette["wood_dark"] = [0.22, 0.14, 0.10]
+        if floor_finish == "auto by style":
+            palette["floor"] = [0.41, 0.29, 0.20]
+    elif "light oak" in brief:
+        palette["wood"] = [0.82, 0.72, 0.56]
+        palette["floor"] = [0.84, 0.76, 0.63]
+    elif "oak" in brief:
+        palette["wood"] = [0.67, 0.50, 0.32]
+    if "concrete" in brief:
+        palette["floor"] = _mix_color(palette["floor"], [0.48, 0.49, 0.49], 0.75)
+    if "marble" in brief or "stone" in brief:
+        palette["counter"] = [0.88, 0.87, 0.83]
+        palette["table"] = _mix_color(palette["table"], [0.82, 0.80, 0.75], 0.60)
+    if "brass" in brief or "gold" in brief:
+        palette["metal"] = [0.72, 0.55, 0.24]
+
+    palette["ceiling"] = _mix_color(CEILING_COLOR, palette["wall"], 0.10)
+    palette["floor_finish"] = floor_finish
+    palette["wall_finish"] = wall_finish
+    return palette
 
 
 # ================= SCALE CALIBRATION =================
@@ -486,10 +613,15 @@ def build_kitchen_run(P, w=3.0, d=0.64):
     ms = [
         _bx(w, d - 0.04, 0.88, P["cabinet"], cy=-0.02),             # base cabinets
         _bx(w, d, 0.04, P["counter"], z=0.88),                      # countertop
+        _bx(w, 0.035, 0.52, _mix_color(P["counter"], P["wall"], 0.48),
+            cy=-(d / 2 + 0.018), z=0.93),                           # backsplash
         _bx(w * 0.72, 0.35, 0.72, P["cabinet"],
             cx=-w * 0.12, cy=-(d / 2 - 0.175), z=1.50),             # upper cabinets
         _bx(0.60, 0.52, 0.015, SCREEN_DARK, cx=w * 0.22, z=0.92),   # cooktop
         _bx(0.50, 0.40, 0.02, [0.75, 0.77, 0.79], cx=-w * 0.25, z=0.90),  # sink
+        _cyl(0.018, 0.30, P["metal"], cx=-w * 0.25,
+             cy=-(d / 2 - 0.08), z=0.92),                           # faucet
+        _cyl(0.10, 0.17, P["accent"], cx=w * 0.39, z=0.93),         # utensil pot
     ]
     # cabinet door seams
     n_doors = max(2, int(w / 0.6))
@@ -497,6 +629,10 @@ def build_kitchen_run(P, w=3.0, d=0.64):
         x = -w / 2 + i * (w / n_doors)
         ms.append(_bx(0.015, 0.02, 0.78, _shade(P["cabinet"], 0.75),
                       cx=x, cy=(d / 2 - 0.03), z=0.05))
+        ms.append(_bx(
+            0.012, 0.038, 0.48, _shade(P["counter"], 0.78),
+            cx=x, cy=-(d / 2 + 0.022), z=0.95,
+        ))
     return ms, w, d
 
 
@@ -650,6 +786,53 @@ def build_ottoman(P, w=0.72, d=0.52):
             ms.append(_cyl(0.025, 0.11, P["wood_dark"],
                            cx=sx * (w / 2 - 0.08), cy=sy * (d / 2 - 0.08)))
     return ms, w, d
+
+
+def build_bench(P, w=1.15, d=0.42):
+    """Upholstered bedroom/dressing bench with a slim timber frame."""
+    ms = [
+        _bx(w, d, 0.16, P["sofa"], z=0.38),
+        _bx(w - 0.08, d - 0.08, 0.08, _shade(P["sofa"], 1.08), z=0.54),
+    ]
+    for sx in (-1, 1):
+        for sy in (-1, 1):
+            ms.append(_bx(
+                0.045, 0.045, 0.38, P["wood_dark"],
+                cx=sx * (w / 2 - 0.08), cy=sy * (d / 2 - 0.07),
+            ))
+    return ms, w, d
+
+
+def build_round_mirror(P, diameter=0.88, z=1.55):
+    """Round framed mirror, oriented against a local-frame wall."""
+    frame = o3d.geometry.TriangleMesh.create_cylinder(
+        radius=diameter / 2, height=0.035, resolution=40
+    )
+    frame.rotate(
+        o3d.geometry.get_rotation_matrix_from_xyz((math.pi / 2, 0, 0)),
+        center=(0, 0, 0),
+    )
+    frame.translate((0, 0, z))
+    _paint(frame, P["metal"])
+    glass = o3d.geometry.TriangleMesh.create_cylinder(
+        radius=diameter / 2 - 0.045, height=0.038, resolution=40
+    )
+    glass.rotate(
+        o3d.geometry.get_rotation_matrix_from_xyz((math.pi / 2, 0, 0)),
+        center=(0, 0, 0),
+    )
+    glass.translate((0, 0.012, z))
+    _paint(glass, [0.68, 0.78, 0.82])
+    return [frame, glass], diameter, 0.07
+
+
+def build_towel_rail(P, w=0.68, z=1.05):
+    """Wall-mounted towel rail with folded fabric."""
+    return [
+        _bx(w, 0.045, 0.035, P["metal"], z=z),
+        _bx(0.30, 0.055, 0.48, _shade(P["shade"], 0.96),
+            cx=-w * 0.12, z=z - 0.42),
+    ], w, 0.08
 
 
 def build_pendant(P, ceiling_h=WALL_H, drop=0.6):
@@ -922,6 +1105,309 @@ def build_room_trim(room_m, edges, P):
     return meshes
 
 
+def _polygon_parts(geometry):
+    if geometry.is_empty:
+        return []
+    if geometry.geom_type == "Polygon":
+        return [geometry]
+    if hasattr(geometry, "geoms"):
+        return [
+            part for part in geometry.geoms
+            if part.geom_type == "Polygon" and part.area > 1e-5
+        ]
+    return []
+
+
+def build_floor_finish(room_m, P, room_type, style, config=None):
+    """Add clipped flooring joints so the floor reads as a designed material."""
+    config = config or {}
+    poly = Polygon([(p[0], p[1]) for p in room_m]).buffer(-0.025)
+    if poly.is_empty:
+        return []
+    minx, miny, maxx, maxy = poly.bounds
+    room_type = (room_type or "").lower()
+    style = (style or "").lower()
+    finish = str(config.get("floor_finish", "Auto by style")).lower()
+    if finish == "polished concrete":
+        return []
+    if finish == "terrazzo":
+        rng = random.Random(
+            int(hashlib.sha1(str(poly.bounds).encode("utf-8")).hexdigest()[:8], 16)
+        )
+        specks = []
+        colors = (
+            _shade(P["floor"], 0.60),
+            _shade(P["floor"], 1.18),
+            _mix_color(P["floor"], P["accent"], 0.42),
+        )
+        attempts = max(45, int(poly.area * 5))
+        for index in range(attempts):
+            x = rng.uniform(minx, maxx)
+            y = rng.uniform(miny, maxy)
+            if not poly.contains(Point(x, y)):
+                continue
+            size = rng.uniform(0.025, 0.065)
+            chip = _bx(size, size * rng.uniform(0.45, 1.0), 0.004,
+                       colors[index % len(colors)], z=0.002)
+            chip.rotate(_rotz(rng.uniform(0, math.pi)), center=(0, 0, 0))
+            chip.translate((x, y, 0))
+            specks.append(chip)
+        return specks
+
+    tiled = (
+        finish in ("natural stone", "large tile")
+        or "bath" in room_type
+        or ("kitchen" in room_type and finish == "auto by style")
+        or ("industrial" in style and finish == "auto by style")
+    )
+    spacing = 0.82 if finish in ("natural stone", "large tile") else (
+        0.62 if tiled else 0.24
+    )
+    seam_color = _shade(P["floor"], 0.76 if tiled else 0.82)
+    lines = []
+
+    if tiled:
+        x = math.floor(minx / spacing) * spacing
+        while x <= maxx:
+            lines.append(LineString([(x, miny), (x, maxy)]))
+            x += spacing
+        y = math.floor(miny / spacing) * spacing
+        while y <= maxy:
+            lines.append(LineString([(minx, y), (maxx, y)]))
+            y += spacing
+    else:
+        # Boards follow the room's longest direction for a calmer composition.
+        horizontal = (maxx - minx) >= (maxy - miny)
+        start, end = (miny, maxy) if horizontal else (minx, maxx)
+        value = math.floor(start / spacing) * spacing
+        while value <= end:
+            if horizontal:
+                lines.append(LineString([(minx, value), (maxx, value)]))
+            else:
+                lines.append(LineString([(value, miny), (value, maxy)]))
+            value += spacing
+
+        # Staggered end joints make the strips read as individual wood planks.
+        long_start, long_end = (minx, maxx) if horizontal else (miny, maxy)
+        board_length = 1.25
+        row = 0
+        across = math.floor(start / spacing) * spacing
+        while across <= end:
+            joint = long_start + (0.38 if row % 2 else 0.0)
+            while joint <= long_end:
+                if horizontal:
+                    lines.append(LineString([
+                        (joint, across - spacing / 2),
+                        (joint, across + spacing / 2),
+                    ]))
+                else:
+                    lines.append(LineString([
+                        (across - spacing / 2, joint),
+                        (across + spacing / 2, joint),
+                    ]))
+                joint += board_length
+            across += spacing
+            row += 1
+
+    meshes = []
+    width = 0.010 if tiled else 0.006
+    for line in lines:
+        clipped = line.buffer(width / 2, cap_style=2).intersection(poly)
+        for part in _polygon_parts(clipped):
+            coords = list(part.exterior.coords)[:-1]
+            if len(coords) < 3:
+                continue
+            mesh = floor_mesh(coords, seam_color)
+            mesh.translate((0, 0, 0.004))
+            meshes.append(mesh)
+    return meshes
+
+
+def _free_wall_spans(edges):
+    spans = []
+    for edge in edges:
+        p1, p2 = np.array(edge["p1"]), np.array(edge["p2"])
+        length = float(edge["length"])
+        if length < 0.8:
+            continue
+        blocked = sorted(
+            (max(0.0, start), min(1.0, end))
+            for _kind, start, end in edge.get("openings", [])
+        )
+        cursor = 0.0
+        for start, end in blocked:
+            if start > cursor:
+                spans.append((length * (start - cursor),
+                              p1 + (p2 - p1) * cursor,
+                              p1 + (p2 - p1) * start))
+            cursor = max(cursor, end)
+        if cursor < 1.0:
+            spans.append((length * (1.0 - cursor),
+                          p1 + (p2 - p1) * cursor, p2))
+    return sorted(spans, key=lambda item: -item[0])
+
+
+def build_room_design_surfaces(room_m, edges, P, config):
+    """Build architectural finishes directly from the user's preferences."""
+    room_type = config.get("room_type", "Living Room")
+    style = config.get("style", "Modern")
+    profile = str(config.get("design_profile", "Curated")).lower()
+    wall_finish = str(config.get("wall_finish", "Auto by style")).lower()
+    poly = Polygon([(p[0], p[1]) for p in room_m])
+    if not poly.is_valid:
+        poly = poly.buffer(0)
+    meshes = build_floor_finish(room_m, P, room_type, style, config)
+
+    # One focal wall, chosen from the longest uninterrupted wall span.
+    spans = _free_wall_spans(edges)
+    if spans and spans[0][0] >= 1.25:
+        length, a, b = spans[0]
+        direction = (b - a) / max(length, 1e-9)
+        normal = np.array([-direction[1], direction[0]])
+        middle = (a + b) / 2
+        inward = normal if poly.contains(Point(*(middle + normal * 0.3))) else -normal
+        max_width = 3.4 if profile == "layered" else 2.8
+        width = min(length - 0.16, max_width)
+        fa = middle - direction * width / 2
+        fb = middle + direction * width / 2
+        feature_weight = 0.52 if wall_finish == "accent color" else 0.24
+        if wall_finish == "wood slats":
+            feature_color = _mix_color(P["wall"], P["wood"], 0.52)
+        elif wall_finish == "concrete":
+            feature_color = _mix_color(P["wall"], [0.50, 0.51, 0.50], 0.64)
+        elif wall_finish == "limewash":
+            feature_color = _mix_color(P["wall"], [0.76, 0.70, 0.60], 0.28)
+        else:
+            feature_color = _mix_color(P["wall"], P["accent"], feature_weight)
+        panel = _wall_strip(
+            fa, fb, 0.11, WALL_H - 0.10, 0.028, feature_color,
+            inward, WALL_THICKNESS / 2 + 0.018,
+        )
+        if panel:
+            meshes.append(panel)
+
+        style_key = STYLE_ALIASES.get(style.lower().strip(), "modern")
+        use_slats = (
+            wall_finish == "wood slats"
+            or (
+                wall_finish == "auto by style"
+                and style_key in ("modern", "japandi", "scandinavian", "industrial")
+            )
+        )
+        use_moulding = (
+            wall_finish == "panel moulding"
+            or (
+                wall_finish == "auto by style"
+                and style_key in ("classic", "boho")
+            )
+        )
+        if use_slats:
+            slat_color = _shade(P["wood_dark"], 0.92)
+            spacing = 0.22 if profile == "airy" else 0.16
+            offset = -width / 2 + spacing / 2
+            while offset < width / 2:
+                center = middle + direction * offset
+                sa = center - direction * 0.018
+                sb = center + direction * 0.018
+                slat = _wall_strip(
+                    sa, sb, 0.16, WALL_H - 0.16, 0.04, slat_color,
+                    inward, WALL_THICKNESS / 2 + 0.052,
+                )
+                if slat:
+                    meshes.append(slat)
+                offset += spacing
+        elif use_moulding:
+            # Classic/boho wall moulding: two calm horizontal rails.
+            moulding = _shade(P["wall"], 0.78)
+            for z in (0.88, 2.10):
+                rail = _wall_strip(
+                    fa, fb, z, z + 0.035, 0.04, moulding,
+                    inward, WALL_THICKNESS / 2 + 0.052,
+                )
+                if rail:
+                    meshes.append(rail)
+            for offset in (-width * 0.28, width * 0.28):
+                center = middle + direction * offset
+                va = center - direction * 0.018
+                vb = center + direction * 0.018
+                rail = _wall_strip(
+                    va, vb, 0.28, 2.38, 0.04, moulding,
+                    inward, WALL_THICKNESS / 2 + 0.052,
+                )
+                if rail:
+                    meshes.append(rail)
+
+        # Balanced wall sconces add a warm architectural layer around the
+        # focal wall without depending on realtime lighting support.
+        if profile != "airy" and width >= 2.0:
+            for offset in (-width * 0.34, width * 0.34):
+                center = middle + direction * offset
+                sa = center - direction * 0.065
+                sb = center + direction * 0.065
+                backplate = _wall_strip(
+                    sa, sb, 1.30, 1.66, 0.055, P["metal"],
+                    inward, WALL_THICKNESS / 2 + 0.065,
+                )
+                glow = _wall_strip(
+                    sa + direction * 0.018, sb - direction * 0.018,
+                    1.36, 1.60, 0.065, _shade(P["shade"], 1.08),
+                    inward, WALL_THICKNESS / 2 + 0.095,
+                )
+                if backplate:
+                    meshes.append(backplate)
+                if glow:
+                    meshes.append(glow)
+
+    # A shallow inset ceiling creates a deliberate cove instead of a bare lid.
+    inner = poly.buffer(-0.28)
+    ceiling_color = P.get("ceiling", CEILING_COLOR)
+    for part in _polygon_parts(inner):
+        coords = list(part.exterior.coords)[:-1]
+        if len(coords) < 3:
+            continue
+        tray = floor_mesh(coords, _mix_color(CEILING_COLOR, ceiling_color, 0.35))
+        tray.translate((0, 0, WALL_H - 0.045))
+        meshes.append(tray)
+
+        # Warm cove strip around the inset ceiling.
+        for a, b in zip(coords, coords[1:] + coords[:1]):
+            a, b = np.array(a), np.array(b)
+            d = b - a
+            length = np.linalg.norm(d)
+            if length < 0.10:
+                continue
+            normal = np.array([-d[1], d[0]]) / length
+            cove = _wall_strip(
+                a, b, WALL_H - 0.11, WALL_H - 0.075, 0.025,
+                _shade(P["shade"], 1.08), normal, 0.0,
+            )
+            if cove:
+                meshes.append(cove)
+
+    # Recessed downlights distributed inside the room, with denser lighting
+    # for layered schemes and larger rooms.
+    lighting_area = poly.buffer(-0.55)
+    if not lighting_area.is_empty:
+        minx, miny, maxx, maxy = lighting_area.bounds
+        spacing = 1.45 if profile == "layered" else 1.75
+        xs = np.arange(minx + spacing / 2, maxx + 0.01, spacing)
+        ys = np.arange(miny + spacing / 2, maxy + 0.01, spacing)
+        for x in xs:
+            for y in ys:
+                if not lighting_area.contains(Point(float(x), float(y))):
+                    continue
+                meshes.append(_cyl(
+                    0.085, 0.018, _shade(P["metal"], 0.72),
+                    cx=float(x), cy=float(y), z=WALL_H - 0.025,
+                ))
+                meshes.append(_cyl(
+                    0.060, 0.020, _shade(P["shade"], 1.10),
+                    cx=float(x), cy=float(y), z=WALL_H - 0.047,
+                ))
+
+    return meshes
+
+
 # ================= FURNISHING ENGINE =================
 class RoomFurnisher:
     """Style-aware layout engine for a coherent, walkable 3D interior."""
@@ -932,6 +1418,11 @@ class RoomFurnisher:
         self.P = palette
         self.config = config or {}
         self.design_profile = self.config.get("design_profile", "Curated")
+        self.brief = str(self.config.get("design_notes", "")).lower()
+        if any(word in self.brief for word in ("minimal", "no clutter", "simple")):
+            self.design_profile = "Airy"
+        elif any(word in self.brief for word in ("luxury", "luxurious", "rich decor")):
+            self.design_profile = "Layered"
         signature = "|".join([
             str(self.config.get("name", "room")),
             str(self.config.get("room_type", "")),
@@ -964,32 +1455,44 @@ class RoomFurnisher:
     def airy(self):
         return self.design_profile.lower() == "airy"
 
-    def ai_builder(self, asset_key, fallback_builder):
-        """Return a builder that prefers a cached local AI mesh.
+    @property
+    def wants_plants(self):
+        return "no plant" not in self.brief
 
-        Procedural geometry remains a safe fallback for first runs, missing
-        assets, and rooms launched without the Local AI option.
-        """
-        def builder(P, **kw):
-            fallback = fallback_builder(P, **kw)
-            if not self.config.get("use_local_ai", False):
-                return fallback
+    @property
+    def wants_rugs(self):
+        return "no rug" not in self.brief
+
+    def furniture_builder(self, asset_key, procedural_builder):
+        """Use a cached TripoSR mesh for this item, with a safe local fallback."""
+        if not self.config.get("use_triposr", False):
+            return procedural_builder
+
+        def build_with_triposr(P, **kw):
+            procedural = procedural_builder(P, **kw)
+            _meshes, width, depth = procedural
             try:
-                import local_3d_ai
+                from local_3d_ai import load_asset_mesh, preference_key
 
-                meshes = local_3d_ai.load_asset_mesh(
+                generated = load_asset_mesh(
                     asset_key,
                     self.config.get("style", "Modern"),
-                    fallback[1],
-                    fallback[2],
+                    width,
+                    depth,
+                    design_key=preference_key(self.config),
                 )
-                if meshes:
-                    return meshes, fallback[1], fallback[2]
+                if generated:
+                    if (not generated[0].has_vertex_colors()
+                            and not generated[0].has_textures()):
+                        generated[0].paint_uniform_color(
+                            P.get("wood", [0.65, 0.5, 0.35])
+                        )
+                    return generated, width, depth
             except Exception as exc:
-                print(f"[AI-3D] Falling back to procedural {asset_key}: {exc}")
-            return fallback
+                print(f"[WALK] TripoSR asset '{asset_key}' unavailable: {exc}")
+            return procedural
 
-        return builder
+        return build_with_triposr
 
     # ---- geometry helpers ----
     def _inward_normal(self, p1, p2):
@@ -1099,6 +1602,9 @@ class RoomFurnisher:
 
     def feature_on(self, slot_info, w=None):
         """Add a designed wall treatment behind the room's visual anchor."""
+        if self.config.get("whole_room_design", False):
+            self.art_on(slot_info, w=min(w or slot_info["w"], 1.35))
+            return
         s = slot_info["slot"]
         width = min(w or slot_info["w"], max(0.8, s["len"] - 0.16))
         pos = (np.array(slot_info["pos"])
@@ -1108,17 +1614,18 @@ class RoomFurnisher:
 
     # ---- room recipes ----
     def furnish_living(self):
-        sofa_builder = self.ai_builder("sofa", build_sofa)
-        chair_builder = self.ai_builder("armchair", build_armchair)
-        table_builder = self.ai_builder("coffee_table", build_coffee_table)
-        tv_builder = self.ai_builder("tv_unit", build_tv_unit)
+        sofa_builder = self.furniture_builder("sofa", build_sofa)
+        chair_builder = self.furniture_builder("armchair", build_armchair)
+        table_builder = self.furniture_builder("coffee_table", build_coffee_table)
+        tv_builder = self.furniture_builder("tv_unit", build_tv_unit)
         sofa = (self.against_wall(sofa_builder) or
                 self.against_wall(sofa_builder, w=1.7, d=0.9))
         if sofa:
             n, s = sofa["n"], sofa["s"]
             rug_pos = np.array(sofa["pos"]) + n * 1.55
             rug = build_rug(self.P)
-            if footprint_poly(rug_pos, sofa["yaw"], rug[1], rug[2]).within(self.inset):
+            if (self.wants_rugs and
+                    footprint_poly(rug_pos, sofa["yaw"], rug[1], rug[2]).within(self.inset)):
                 self.add(rug, rug_pos, sofa["yaw"], block=False,
                          avoid_doors=False, check=False)
             self.add(table_builder(self.P),
@@ -1146,19 +1653,23 @@ class RoomFurnisher:
             # TV on the wall facing the sofa
             tv_slots = [sl for sl in self.wall_slots()
                         if np.dot(sl["n"], n) < -0.6]
-            self.against_wall(tv_builder, slots=tv_slots)
+            if "no tv" not in self.brief and "without tv" not in self.brief:
+                self.against_wall(tv_builder, slots=tv_slots)
             if self.layered:
                 ottoman_pos = np.array(sofa["pos"]) + n * 1.48 - s * 1.35
                 self.add(build_ottoman(self.P), ottoman_pos, sofa["yaw"])
-        self.in_corner(build_plant)
-        if self.layered:
-            self.against_wall(build_console_table)
+        if self.wants_plants:
+            self.in_corner(build_plant)
+        if not self.airy:
+            console = self.against_wall(build_console_table)
+            if console and self.layered:
+                self.art_on(console, w=0.85)
         self.pendant()
 
     def furnish_bedroom(self):
-        bed_builder = self.ai_builder("bed", build_bed)
-        nightstand_builder = self.ai_builder("nightstand", build_nightstand)
-        wardrobe_builder = self.ai_builder("wardrobe", build_wardrobe)
+        bed_builder = self.furniture_builder("bed", build_bed)
+        nightstand_builder = self.furniture_builder("nightstand", build_nightstand)
+        wardrobe_builder = self.furniture_builder("wardrobe", build_wardrobe)
         bed = (self.against_wall(bed_builder) or
                self.against_wall(bed_builder, w=1.5, d=2.0))
         if bed:
@@ -1170,21 +1681,29 @@ class RoomFurnisher:
                           + n * (WALL_GAP + ns[2] / 2))
                 self.add(ns, ns_pos, yaw)
             rug_pos = np.array(bed["pos"]) + n * (bed["d"] / 2 - 0.4)
-            self.add(build_rug(self.P, w=bed["w"] + 1.2, d=1.6), rug_pos, yaw,
-                     block=False, avoid_doors=False, check=False)
+            if self.wants_rugs:
+                self.add(build_rug(self.P, w=bed["w"] + 1.2, d=1.6), rug_pos, yaw,
+                         block=False, avoid_doors=False, check=False)
             if self.airy:
                 self.art_on(bed, w=1.1)
             else:
                 self.feature_on(bed, w=min(2.2, bed["w"] + 0.35))
+            if not self.airy:
+                bench_pos = (
+                    np.array(bed["pos"])
+                    + n * (bed["d"] / 2 + 0.38)
+                )
+                self.add(build_bench(self.P), bench_pos, yaw)
         self.against_wall(wardrobe_builder, min_side=2.0)
-        self.in_corner(build_plant, tall=False)
+        if self.wants_plants:
+            self.in_corner(build_plant, tall=False)
         if self.layered:
-            self.against_wall(build_console_table)
+            self.against_wall(build_round_mirror, block=False)
         self.pendant()
 
     def furnish_kitchen(self):
-        fridge_builder = self.ai_builder("fridge", build_fridge)
-        island_builder = self.ai_builder("kitchen_island", build_island)
+        fridge_builder = self.furniture_builder("fridge", build_fridge)
+        island_builder = self.furniture_builder("kitchen_island", build_island)
         slots = self.wall_slots()
         run = None
         for s in slots:
@@ -1219,12 +1738,13 @@ class RoomFurnisher:
         else:
             self.against_wall(fridge_builder)
             self.pendant()
-        self.in_corner(build_plant, tall=False)
+        if self.wants_plants:
+            self.in_corner(build_plant, tall=False)
 
     def furnish_dining(self):
-        table_builder = self.ai_builder("dining_table", build_dining_table)
-        chair_builder = self.ai_builder("dining_chair", build_chair)
-        sideboard_builder = self.ai_builder("sideboard", build_sideboard)
+        table_builder = self.furniture_builder("dining_table", build_dining_table)
+        chair_builder = self.furniture_builder("dining_chair", build_chair)
+        sideboard_builder = self.furniture_builder("sideboard", build_sideboard)
         slots = self.wall_slots()
         yaw = yaw_facing(slots[0]["n"]) if slots else 0.0
         tbl = table_builder(self.P)
@@ -1241,31 +1761,34 @@ class RoomFurnisher:
         sb = self.against_wall(sideboard_builder)
         if sb:
             self.art_on(sb, w=1.0)
-        self.in_corner(build_plant)
+        if self.wants_plants:
+            self.in_corner(build_plant)
 
     def furnish_office(self):
-        desk_builder = self.ai_builder("desk", build_desk)
-        chair_builder = self.ai_builder("office_chair", build_office_chair)
-        shelf_builder = self.ai_builder("bookshelf", build_bookshelf)
+        desk_builder = self.furniture_builder("desk", build_desk)
+        chair_builder = self.furniture_builder("office_chair", build_office_chair)
+        shelf_builder = self.furniture_builder("bookshelf", build_bookshelf)
         desk = self.against_wall(desk_builder)
         if desk:
             ch_pos = np.array(desk["pos"]) + desk["n"] * 0.72
             self.add(chair_builder(self.P), ch_pos, yaw_facing(-desk["n"]))
             self.art_on(desk, w=0.9)
         self.against_wall(shelf_builder, min_side=1.8)
-        self.in_corner(build_plant)
+        if self.wants_plants:
+            self.in_corner(build_plant)
         self.pendant()
 
     def furnish_bathroom(self):
-        vanity_builder = self.ai_builder("vanity", build_vanity)
-        toilet_builder = self.ai_builder("toilet", build_toilet)
-        shower_builder = self.ai_builder("shower", build_shower)
+        vanity_builder = self.furniture_builder("vanity", build_vanity)
+        toilet_builder = self.furniture_builder("toilet", build_toilet)
+        shower_builder = self.furniture_builder("shower", build_shower)
         v = self.against_wall(vanity_builder)
         slots = self.wall_slots()
         if v:
             slots = [s for s in slots
                      if not np.allclose(s["mid"], v["slot"]["mid"])] or slots
         self.against_wall(toilet_builder, slots=slots)
+        self.against_wall(build_towel_rail, slots=slots, block=False)
         # shower in the deepest corner
         for vx in self.room_m:
             vx = np.array(vx)
@@ -1276,12 +1799,23 @@ class RoomFurnisher:
             pos = vx + to_c / L * 0.75
             if self.add(shower_builder(self.P), pos, 0.0):
                 break
+        if self.wants_rugs:
+            self.add(
+                build_rug(self.P, w=0.85, d=0.55),
+                self.centroid, 0.0, block=False, avoid_doors=False,
+            )
+        if self.wants_plants:
+            self.in_corner(build_plant, tall=False)
         self.pendant()
 
     def furnish_generic(self):
-        self.add(build_rug(self.P, 2.0, 1.4), self.centroid, 0.0,
-                 block=False, avoid_doors=False, check=False)
-        self.in_corner(build_plant)
+        if self.wants_rugs:
+            self.add(build_rug(self.P, 2.0, 1.4), self.centroid, 0.0,
+                     block=False, avoid_doors=False, check=False)
+        if self.wants_plants:
+            self.in_corner(build_plant)
+        self.against_wall(build_console_table)
+        self.against_wall(build_round_mirror, block=False)
         self.pendant()
 
     def furnish(self, room_type):
@@ -1355,7 +1889,7 @@ def build_scene(rooms_px, doors_px, windows_px, px_per_m=None, room_configs=None
         cfg = room_configs[i] if i < len(room_configs) else {}
         style = cfg.get("style", "Modern")
         rtype = cfg.get("room_type", "Living Room")
-        P = get_palette(style)
+        P = get_palette(style, cfg)
 
         poly = Polygon([(p[0], p[1]) for p in room])
         if not poly.is_valid:
@@ -1364,12 +1898,16 @@ def build_scene(rooms_px, doors_px, windows_px, px_per_m=None, room_configs=None
 
         # floor + ceiling in the room's style
         meshes.append(floor_mesh(room, P["floor"]))
-        ceil = floor_mesh(room, CEILING_COLOR)
+        ceil = floor_mesh(room, P.get("ceiling", CEILING_COLOR))
         ceil.translate((0, 0, WALL_H))
         meshes.append(ceil)
 
         meshes.extend(build_walls(all_edges[i], P["wall"]))
         meshes.extend(build_room_trim(room, all_edges[i], P))
+        if cfg.get("whole_room_design", True):
+            meshes.extend(build_room_design_surfaces(
+                room, all_edges[i], P, cfg
+            ))
 
         if furnished:
             cfg = dict(cfg)
@@ -1405,11 +1943,11 @@ def build_scene(rooms_px, doors_px, windows_px, px_per_m=None, room_configs=None
         strip.translate((c[0], c[1], 0))
         meshes.append(strip)
 
-    # ---- walkable area: every room, joined through generous door corridors ----
-    # The player may roam the whole interior and pass through EVERY door.
-    # Furniture is NOT subtracted, so nothing ever blocks you from entering a
-    # room (walking "through" a chair is far less annoying than being stuck
-    # outside a doorway). Walls are the only barrier.
+    # ---- walkable area: each room (inset off its walls) joined ONLY through
+    # the door openings. Walls are solid — you cannot pass except at doors.
+    # Furniture is NOT subtracted, so you can still reach every room, but the
+    # door corridor is kept TIGHT (no wider than the opening, just deep enough
+    # to bridge the two rooms) so you can't slip sideways through a wall.
     walk_parts = [p.buffer(-BODY_RADIUS) for p in room_polys]
     for a, b in door_infos:
         c = (a + b) / 2
@@ -1418,10 +1956,12 @@ def build_scene(rooms_px, doors_px, windows_px, px_per_m=None, room_configs=None
         if L < 1e-6:
             continue
         d = d / L
-        # wide, deep corridor so the two rooms' insets always overlap through
-        # the doorway even if the detected polygons don't share the wall exactly
-        half_w = max(L, MIN_DOOR_W) / 2 + 0.05
-        depth = WALL_THICKNESS * 2 + BODY_RADIUS + 0.9
+        # width: the clear opening only (so it lines up with the door hole and
+        # never spans the wall beside the jamb)
+        half_w = max(L, MIN_DOOR_W) / 2 - 0.03
+        # depth: just enough to span both rooms' insets + the wall band between
+        # their polygons — NOT deep enough to walk far into a wall
+        depth = BODY_RADIUS + WALL_THICKNESS + 0.22
         corridor = shp_box(-half_w, -depth, half_w, depth)
         ang = math.degrees(math.atan2(d[1], d[0]))
         corridor = affinity.translate(affinity.rotate(corridor, ang, origin=(0, 0)),
@@ -1507,7 +2047,7 @@ def launch_walkthrough(rooms_px, doors_px, windows_px, px_per_m=None,
 
     vis = o3d.visualization.VisualizerWithKeyCallback()
     vis.create_window(window_title or
-                      "AI Interior Walkthrough — WASD move · drag look · G walls · H help · Q exit",
+                      "3D Interior Walkthrough — WASD move · drag look · G walls · H help · Q exit",
                       1400, 900)
     for m in scene["meshes"]:
         if m is not None:

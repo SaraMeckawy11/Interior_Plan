@@ -12,7 +12,8 @@ import os, math, json
 
 # ---------------------------------------------------------------------------
 # Auto-relaunch under the project venv. The app's dependencies (OpenCV, torch,
-# diffusers, open3d, ...) live in the FLUX/klein venv, NOT in the system Python.
+# OpenCV, Open3D, and the gallery dependencies live in the project environment,
+# not in the system Python.
 # If this file is started with any other interpreter (e.g. VS Code's default
 # "python"), re-run it once under the venv so the Run button just works.
 # ---------------------------------------------------------------------------
@@ -22,6 +23,8 @@ _VENV_CANDIDATES = [
     os.environ.get("INTERIOR_PLAN_PYTHON", ""),
     os.path.join(_PROJECT_DIR, ".venv", "Scripts", "python.exe"),
     os.path.join(_PROJECT_DIR, "hf_cache", "venv", "Scripts", "python.exe"),
+    r"C:\Sara\Interior_design\hf_cache\venv\Scripts\python.exe",
+    os.path.join(_PROJECT_DIR, ".triposr_venv", "Scripts", "python.exe"),
     r"C:\SIA\Interior_design\hf_cache\venv\Scripts\python.exe",
 ]
 _VENV_PY = next((path for path in _VENV_CANDIDATES
@@ -29,7 +32,8 @@ _VENV_PY = next((path for path in _VENV_CANDIDATES
 if _VENV_PY and os.path.normcase(os.path.realpath(_sys.executable)) \
         != os.path.normcase(os.path.realpath(_VENV_PY)):
     import importlib.util as _ilu
-    if _ilu.find_spec("cv2") is None:
+    if any(_ilu.find_spec(name) is None
+           for name in ("cv2", "open3d", "shapely")):
         import subprocess as _sp
         print(f"[BOOT] Relaunching under project venv:\n       {_VENV_PY}")
         raise SystemExit(_sp.call([_VENV_PY, os.path.abspath(__file__), *_sys.argv[1:]]))
@@ -42,7 +46,6 @@ import numpy as np
 from io import BytesIO
 import threading
 
-import planAI as ai_furnisher
 from plan3d import build_3d_apartment_and_walk
 from room_gallery import (
     DesignGallery, save_screenshot_entry, load_metadata, save_metadata,
@@ -230,7 +233,7 @@ title_box = tk.Frame(header, bg=SURFACE)
 title_box.pack(side=tk.LEFT, padx=(20, 10), pady=10)
 tk.Label(title_box, text="🏠 Floor Plan Studio", font=("Segoe UI", 16, "bold"),
          bg=SURFACE, fg=TEXT_COLOR).pack(anchor="w")
-tk.Label(title_box, text="Draw rooms → assign a style → generate and explore an AI 3D interior",
+tk.Label(title_box, text="Draw rooms → choose finishes → explore a realistic 3D interior",
          font=("Segoe UI", 9), bg=SURFACE, fg=TEXT_MUTED).pack(anchor="w")
 
 action_frame = tk.Frame(header, bg=SURFACE)
@@ -546,6 +549,8 @@ def generate_ai_interior_design(entry: DesignEntry):
         # doesn't try to auto-detect from the 3D render (which gives wrong results)
         # Also pass visible_openings (with 3D corners) + camera_params so the AI
         # can project door/window positions directly onto the Canny conditioning image
+        import planAI as ai_furnisher
+
         results = ai_furnisher.generate_furnished_plan(
             base_rgb=screenshot_rgb,
             room_masks=[mask],
@@ -1221,7 +1226,7 @@ def auto_detect_plan():
 
 # ---------- 3D WALKTHROUGH (2D plan -> furnished 3D model you can walk) ----------
 def open_walkthrough_dialog():
-    """Configure and launch the AI-composed, walkable 3D interior."""
+    """Configure and launch the preference-driven, walkable 3D interior."""
     if not state.room_segments:
         messagebox.showinfo("No rooms", "Draw at least one room first")
         return
@@ -1244,7 +1249,7 @@ def open_walkthrough_dialog():
         pass
 
     dlg = tk.Toplevel(root)
-    dlg.title("AI 3D Interior Walkthrough")
+    dlg.title("3D Interior Walkthrough")
     dlg.configure(bg=BG_COLOR)
     dlg.transient(root)
     dlg.grab_set()
@@ -1256,7 +1261,7 @@ def open_walkthrough_dialog():
     # Header band
     head = tk.Frame(dlg, bg=SURFACE)
     head.pack(fill=tk.X)
-    tk.Label(head, text="AI 3D Interior Walkthrough", font=("Segoe UI", 17, "bold"),
+    tk.Label(head, text="3D Interior Walkthrough", font=("Segoe UI", 17, "bold"),
              bg=SURFACE, fg=TEXT_COLOR).pack(anchor="w", padx=24, pady=(18, 3))
     tk.Label(head, text="Turn the floor plan into a coordinated interior you can explore.",
              font=("Segoe UI", 10), bg=SURFACE, fg=TEXT_MUTED,
@@ -1264,7 +1269,7 @@ def open_walkthrough_dialog():
     steps = tk.Frame(head, bg=SURFACE)
     steps.pack(fill=tk.X, padx=24, pady=(0, 16))
     for label, color in (("1  Assign rooms", PRIMARY_COLOR),
-                         ("2  AI composes", PURPLE_COLOR),
+                         ("2  Apply finishes", PURPLE_COLOR),
                          ("3  Walk through", SUCCESS_COLOR)):
         tk.Label(steps, text=label, font=("Segoe UI", 9, "bold"),
                  bg="#f1f5f9", fg=color, padx=10, pady=5).pack(
@@ -1288,6 +1293,49 @@ def open_walkthrough_dialog():
     tk.Label(global_card, text="Airy: essentials  •  Curated: balanced  •  Layered: richer decor",
              font=("Segoe UI", 9), bg=SURFACE, fg=TEXT_MUTED).grid(
                  row=1, column=1, padx=(0, 12), pady=(0, 11), sticky="w")
+    palette_var = tk.StringVar(value="Warm neutral")
+    tk.Label(global_card, text="COLOR MOOD", font=("Segoe UI", 8, "bold"),
+             bg=SURFACE, fg=TEXT_MUTED).grid(
+                 row=2, column=0, sticky="w", padx=12, pady=(0, 4))
+    tk.Label(global_card, text="PERSONAL BRIEF (OPTIONAL)", font=("Segoe UI", 8, "bold"),
+             bg=SURFACE, fg=TEXT_MUTED).grid(
+                 row=2, column=1, sticky="w", padx=(0, 12), pady=(0, 4))
+    ttk.Combobox(
+        global_card, textvariable=palette_var,
+        values=["Warm neutral", "Cool neutral", "Earthy natural",
+                "Light and airy", "Monochrome", "Bold accents"],
+        width=18, state="readonly", font=("Segoe UI", 9),
+    ).grid(row=3, column=0, padx=(12, 8), pady=(0, 11), sticky="w")
+    notes_var = tk.StringVar()
+    notes_entry = tk.Entry(
+        global_card, textvariable=notes_var, font=("Segoe UI", 9),
+        relief=tk.FLAT, highlightthickness=1, highlightbackground=BORDER,
+        highlightcolor=PRIMARY_COLOR,
+    )
+    notes_entry.grid(
+        row=3, column=1, padx=(0, 12), pady=(0, 11), sticky="ew"
+    )
+    floor_var = tk.StringVar(value="Auto by style")
+    wall_var = tk.StringVar(value="Auto by style")
+    tk.Label(global_card, text="FLOOR FINISH", font=("Segoe UI", 8, "bold"),
+             bg=SURFACE, fg=TEXT_MUTED).grid(
+                 row=4, column=0, sticky="w", padx=12, pady=(0, 4))
+    tk.Label(global_card, text="WALL FINISH", font=("Segoe UI", 8, "bold"),
+             bg=SURFACE, fg=TEXT_MUTED).grid(
+                 row=4, column=1, sticky="w", padx=(0, 12), pady=(0, 4))
+    ttk.Combobox(
+        global_card, textvariable=floor_var,
+        values=["Auto by style", "Light oak", "Warm oak", "Dark walnut",
+                "Natural stone", "Polished concrete", "Terrazzo", "Large tile"],
+        width=18, state="readonly", font=("Segoe UI", 9),
+    ).grid(row=5, column=0, padx=(12, 8), pady=(0, 11), sticky="w")
+    ttk.Combobox(
+        global_card, textvariable=wall_var,
+        values=["Auto by style", "Warm paint", "Cool paint", "Limewash",
+                "Wood slats", "Panel moulding", "Concrete", "Accent color"],
+        width=28, state="readonly", font=("Segoe UI", 9),
+    ).grid(row=5, column=1, padx=(0, 12), pady=(0, 11), sticky="ew")
+    global_card.grid_columnconfigure(1, weight=1)
 
     # Column headers
     hdr = tk.Frame(body, bg=BG_COLOR)
@@ -1335,29 +1383,6 @@ def open_walkthrough_dialog():
              SECONDARY_HOVER, fg=TEXT_COLOR, command=apply_style_to_all,
              font_size=9).pack(side=tk.LEFT, padx=8)
 
-    ai_asset_card = tk.Frame(body, bg=SURFACE, highlightbackground=BORDER,
-                             highlightthickness=1)
-    ai_asset_card.pack(fill=tk.X, pady=(12, 0))
-    local_ai_var = tk.BooleanVar(value=True)
-    tk.Checkbutton(ai_asset_card,
-                   text="Local AI furniture — generate real 3D meshes offline",
-                   variable=local_ai_var, font=("Segoe UI", 10, "bold"),
-                   bg=SURFACE, fg=TEXT_COLOR, selectcolor=SURFACE,
-                   activebackground=SURFACE, cursor="hand2").pack(
-                       anchor="w", padx=10, pady=(9, 1))
-    try:
-        import local_3d_ai
-        _local_ready, _local_status = local_3d_ai.runtime_status()
-    except Exception as _local_error:
-        _local_ready, _local_status = False, str(_local_error)
-    tk.Label(ai_asset_card,
-             text=("FLUX creates furniture from your style; TripoSR converts it "
-                   "to cached GLB objects. " + _local_status),
-             font=("Segoe UI", 9), bg=SURFACE,
-             fg=SUCCESS_COLOR if _local_ready else TEXT_MUTED,
-             wraplength=590, justify=tk.LEFT).pack(
-                 anchor="w", padx=14, pady=(0, 9))
-
     explore_card = tk.Frame(body, bg=SURFACE, highlightbackground=BORDER,
                             highlightthickness=1)
     explore_card.pack(fill=tk.X, pady=(8, 0))
@@ -1372,52 +1397,95 @@ def open_walkthrough_dialog():
              font=("Segoe UI", 9), bg=SURFACE, fg=TEXT_MUTED).pack(
                  anchor="w", padx=14, pady=(0, 9))
 
+    engine_card = tk.Frame(body, bg=SURFACE, highlightbackground=BORDER,
+                           highlightthickness=1)
+    engine_card.pack(fill=tk.X, pady=(8, 0))
+    engine_var = tk.StringVar(value="Procedural - instant & stable")
+    try:
+        import local_3d_ai
+        tripo_ready, tripo_reason = local_3d_ai.runtime_status()
+    except Exception as exc:
+        tripo_ready, tripo_reason = False, f"TripoSR is unavailable: {exc}"
+    engine_values = ["Procedural - instant & stable"]
+    if tripo_ready:
+        engine_values.append("TripoSR - local AI (experimental)")
+    tk.Label(engine_card, text="FURNITURE GEOMETRY", font=("Segoe UI", 8, "bold"),
+             bg=SURFACE, fg=TEXT_MUTED).grid(
+                 row=0, column=0, sticky="w", padx=10, pady=(9, 4))
+    ttk.Combobox(
+        engine_card, textvariable=engine_var, values=engine_values,
+        width=34, state="readonly", font=("Segoe UI", 9),
+    ).grid(row=1, column=0, sticky="w", padx=10, pady=(0, 4))
+    tk.Label(
+        engine_card,
+        text=(tripo_reason + " TripoSR changes furniture meshes only; the complete "
+              "room layout, finishes, lighting and decor stay coordinated."),
+        font=("Segoe UI", 9), bg=SURFACE,
+        fg=SUCCESS_COLOR if tripo_ready else TEXT_MUTED,
+        wraplength=600, justify=tk.LEFT,
+    ).grid(row=2, column=0, sticky="w", padx=10, pady=(0, 9))
+    engine_card.grid_columnconfigure(0, weight=1)
+
     def launch(only_room=None):
         configs, rooms = [], []
-        variation = os.urandom(4).hex()
+        variation = "preference-render-v3"
+        use_triposr = engine_var.get().startswith("TripoSR")
         for name, tvar, svar in room_vars:
             if only_room and name != only_room:
                 continue
             rooms.append(state.room_segments[name])
             configs.append(dict(room_type=tvar.get(), style=svar.get(), name=name,
                                 design_profile=profile_var.get(),
+                                color_mood=palette_var.get(),
+                                design_notes=notes_var.get(),
+                                floor_finish=floor_var.get(),
+                                wall_finish=wall_var.get(),
                                 design_seed=variation,
-                                use_local_ai=local_ai_var.get()))
-        dlg.destroy()
+                                whole_room_design=True,
+                                use_triposr=use_triposr))
+        dlg.withdraw()
         loading = tk.Toplevel(root)
-        loading.title("Creating AI interior")
+        loading.title("Building 3D interior")
         loading.configure(bg=SURFACE)
         loading.transient(root)
         loading.resizable(False, False)
         loading.geometry(f"480x175+{root.winfo_x() + 480}+{root.winfo_y() + 260}")
-        tk.Label(loading, text="Composing your AI 3D interior…",
+        tk.Label(loading, text="Building your designed 3D interior…",
                  font=("Segoe UI", 14, "bold"), bg=SURFACE,
                  fg=TEXT_COLOR).pack(pady=(28, 6))
         loading_status = tk.StringVar(
-            value="Planning furniture, decor, lighting and clear walking paths")
+            value="Applying finishes, lighting, furniture, decor and clear circulation")
         tk.Label(loading, textvariable=loading_status,
                  font=("Segoe UI", 9), bg=SURFACE, fg=TEXT_MUTED,
                  wraplength=430, justify=tk.CENTER).pack()
         loading.update()
 
         def update_loading(message):
-            loading_status.set(message)
-            loading.update()
+            if loading.winfo_exists():
+                loading_status.set(message)
+                loading.update()
 
         try:
-            if local_ai_var.get():
+            if use_triposr:
+                update_loading("Preparing local TripoSR furniture meshes...")
                 try:
                     import local_3d_ai
-                    local_3d_ai.prepare_local_assets(
-                        configs, progress=update_loading)
-                except Exception as local_error:
-                    for config in configs:
-                        config["use_local_ai"] = False
-                    messagebox.showwarning(
-                        "Local AI furniture unavailable",
-                        f"{local_error}\n\nThe walkthrough will open with the "
-                        "procedural fallback. Your floor plan is unchanged.")
-            update_loading("Assembling the measured apartment and AI furniture…")
+                    local_3d_ai.prepare_local_assets(configs, update_loading)
+                except Exception as exc:
+                    if loading.winfo_exists():
+                        loading.destroy()
+                    dlg.deiconify()
+                    dlg.grab_set()
+                    messagebox.showerror(
+                        "TripoSR furniture could not be built",
+                        f"{exc}\n\nNo fallback was opened, so you can retry or "
+                        "select the procedural furniture engine.",
+                        parent=dlg,
+                    )
+                    return
+            dlg.destroy()
+            loading_status.set("Assembling the measured apartment and room designs…")
+            loading.update()
             plan_walkthrough.launch_walkthrough(
                 rooms, state.doors, state.windows, px_per_m=None,
                 room_configs=configs, furnished=True,
@@ -1434,7 +1502,7 @@ def open_walkthrough_dialog():
     inner.pack(anchor="e", padx=20, pady=14)
     make_btn(inner, "Cancel", SECONDARY_COLOR, SECONDARY_HOVER, fg=TEXT_COLOR,
              command=dlg.destroy).pack(side=tk.LEFT, padx=6)
-    make_btn(inner, "Generate & start walkthrough", PURPLE_COLOR, PURPLE_HOVER,
+    make_btn(inner, "Build & start walkthrough", PURPLE_COLOR, PURPLE_HOVER,
              command=launch, font_size=11).pack(side=tk.LEFT, padx=6)
 
 
@@ -1446,7 +1514,7 @@ make_btn(edit_frame, "🗑  Reset", "#fee2e2", "#fecaca", fg=DANGER_COLOR,
          command=reset_all).pack(side=tk.LEFT, padx=3)
 
 # Primary actions (header, right side; packed right-to-left)
-make_btn(action_frame, "✦  AI 3D Walkthrough", PURPLE_COLOR, PURPLE_HOVER,
+make_btn(action_frame, "✦  3D Walkthrough", PURPLE_COLOR, PURPLE_HOVER,
          command=open_walkthrough_dialog, font_size=11).pack(side=tk.RIGHT,
                                                              padx=(8, 0))
 make_btn(action_frame, "🎨  Gallery", ACCENT_COLOR, ACCENT_HOVER,

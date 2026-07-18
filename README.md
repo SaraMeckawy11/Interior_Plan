@@ -3,21 +3,31 @@
 The application turns a measured 2D floor plan into a furnished, first-person
 3D walkthrough.
 
-## Local AI 3D furniture
+## Preference-driven 3D walkthrough
 
-The **Local AI furniture** option keeps the complete generation pipeline on
-this computer:
+The walkthrough is generated directly from the measured floor plan. The
+procedural furniture engine is the instant, stable default. An optional local
+TripoSR mode reconstructs primary furniture as AI-generated 3D meshes and
+reuses them from the local cache, without a paid cloud service.
 
-1. The existing local FLUX.2-klein model creates furniture reference images
-   from each room's selected type, style, and design direction.
-2. The open-source TripoSR model converts those references into actual GLB
-   meshes.
-3. Generated meshes are scaled to real-world dimensions, placed inside the
-   measured floor plan, and cached under `room_designs/local_3d_assets`.
+For a new design direction, the local image model first creates isolated
+furniture references and TripoSR converts them to GLB meshes. The cache key
+includes the style, design profile, color mood, personal brief, floor finish,
+and wall finish, so different user preferences do not share the wrong assets.
 
-The first generation is slower because the assets must be created. Later
-walkthroughs reuse the cache and start much faster. If a local mesh is missing
-or generation fails, the walkthrough uses its procedural equivalent instead
-of blocking the user.
+The setup dialog controls the complete room direction:
+
+- room type and style;
+- airy, curated, or layered decoration;
+- color mood and personal material/color notes;
+- flooring such as oak, walnut, stone, concrete, terrazzo, or tile;
+- wall treatments such as paint, limewash, timber slats, moulding, or concrete.
+
+The renderer applies those choices to floors, focal walls, ceiling coves,
+recessed lighting, sconces, curtains, coordinated furniture, rugs, artwork,
+mirrors, plants, and room-specific decoration. Walls, doors, and windows remain
+authoritative from the floor plan. TripoSR changes furniture geometry only, so
+the whole-room layout, scale, finishes, lighting, decor, collision, and
+circulation remain controlled by the same coordinated design engine.
 
 Run the desktop application with `run_app.bat`.
