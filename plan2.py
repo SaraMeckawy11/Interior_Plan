@@ -1376,6 +1376,9 @@ def open_walkthrough_dialog():
     )
     floor_var = tk.StringVar(value="Auto by style")
     wall_var = tk.StringVar(value="Auto by style")
+    rug_var = tk.StringVar(value="Auto by style")
+    curtain_var = tk.StringVar(value="Auto by style")
+    decor_var = tk.StringVar(value="Auto by style")
     tk.Label(global_card, text="FLOOR FINISH", font=("Segoe UI", 8, "bold"),
              bg=SURFACE, fg=TEXT_MUTED).grid(
                  row=4, column=0, sticky="w", padx=12, pady=(0, 4))
@@ -1395,6 +1398,37 @@ def open_walkthrough_dialog():
                 "Accent color"],
         width=28, state="readonly", font=("Segoe UI", 9),
     ).grid(row=5, column=1, padx=(0, 12), pady=(0, 11), sticky="ew")
+    tk.Label(global_card, text="RUG DESIGN", font=("Segoe UI", 8, "bold"),
+             bg=SURFACE, fg=TEXT_MUTED).grid(
+                 row=6, column=0, sticky="w", padx=12, pady=(0, 4))
+    tk.Label(global_card, text="WINDOW TREATMENT", font=("Segoe UI", 8, "bold"),
+             bg=SURFACE, fg=TEXT_MUTED).grid(
+                 row=6, column=1, sticky="w", padx=(0, 12), pady=(0, 4))
+    ttk.Combobox(
+        global_card, textvariable=rug_var,
+        values=["Auto by style", "None", "Plain woven", "Bordered",
+                "Geometric", "Vintage pattern"],
+        width=18, state="readonly", font=("Segoe UI", 9),
+    ).grid(row=7, column=0, padx=(12, 8), pady=(0, 11), sticky="w")
+    ttk.Combobox(
+        global_card, textvariable=curtain_var,
+        values=["Auto by style", "None", "Sheer panels", "Linen drapes",
+                "Layered sheers + drapes"],
+        width=28, state="readonly", font=("Segoe UI", 9),
+    ).grid(row=7, column=1, padx=(0, 12), pady=(0, 11), sticky="ew")
+    tk.Label(global_card, text="DECOR SET", font=("Segoe UI", 8, "bold"),
+             bg=SURFACE, fg=TEXT_MUTED).grid(
+                 row=8, column=0, sticky="w", padx=12, pady=(0, 4))
+    tk.Label(global_card,
+             text="Furniture, textiles and decoration stay in one style family.",
+             font=("Segoe UI", 8), bg=SURFACE, fg=TEXT_MUTED).grid(
+                 row=8, column=1, sticky="w", padx=(0, 12), pady=(0, 4))
+    ttk.Combobox(
+        global_card, textvariable=decor_var,
+        values=["Auto by style", "Minimal", "Art & greenery",
+                "Sculptural", "Layered"],
+        width=18, state="readonly", font=("Segoe UI", 9),
+    ).grid(row=9, column=0, padx=(12, 8), pady=(0, 11), sticky="w")
     global_card.grid_columnconfigure(1, weight=1)
 
     # Column headers
@@ -1492,7 +1526,7 @@ def open_walkthrough_dialog():
 
     def launch(only_room=None):
         configs, rooms = [], []
-        variation = "preference-render-v3"
+        variation = "preference-render-v4"
         use_catalog = engine_var.get().startswith("Professional local 3D catalog")
         for name, tvar, svar in room_vars:
             if only_room and name != only_room:
@@ -1504,6 +1538,9 @@ def open_walkthrough_dialog():
                                 design_notes=notes_var.get(),
                                 floor_finish=floor_var.get(),
                                 wall_finish=wall_var.get(),
+                                rug_design=rug_var.get(),
+                                curtain_design=curtain_var.get(),
+                                decor_set=decor_var.get(),
                                 design_seed=variation,
                                 whole_room_design=True,
                                 use_catalog=use_catalog,

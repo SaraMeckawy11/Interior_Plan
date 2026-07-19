@@ -97,6 +97,9 @@ def preference_key(config) -> str:
         "design_notes": str(config.get("design_notes", "")).strip().lower(),
         "floor_finish": config.get("floor_finish", "Auto by style"),
         "wall_finish": config.get("wall_finish", "Auto by style"),
+        "rug_design": config.get("rug_design", "Auto by style"),
+        "curtain_design": config.get("curtain_design", "Auto by style"),
+        "decor_set": config.get("decor_set", "Auto by style"),
     }
     signature = hashlib.sha1(
         json.dumps(direction, sort_keys=True).encode("utf-8")
@@ -112,6 +115,9 @@ def _uses_default_direction(config) -> bool:
         and not str(config.get("design_notes", "")).strip()
         and config.get("floor_finish", "Auto by style") == "Auto by style"
         and config.get("wall_finish", "Auto by style") == "Auto by style"
+        and config.get("rug_design", "Auto by style") == "Auto by style"
+        and config.get("curtain_design", "Auto by style") == "Auto by style"
+        and config.get("decor_set", "Auto by style") == "Auto by style"
     )
 
 
@@ -206,6 +212,9 @@ def _requested_jobs(room_configs):
         design_notes = str(config.get("design_notes", "")).strip()
         floor_finish = config.get("floor_finish", "Auto by style")
         wall_finish = config.get("wall_finish", "Auto by style")
+        rug_design = config.get("rug_design", "Auto by style")
+        curtain_design = config.get("curtain_design", "Auto by style")
+        decor_set = config.get("decor_set", "Auto by style")
         for asset_key in _room_asset_keys(config.get("room_type", "")):
             final_path = asset_path(style, asset_key, design_key)
             if final_path.is_file() and final_path.stat().st_size > 10_000:
@@ -227,7 +236,9 @@ def _requested_jobs(room_configs):
                     f"{profile.lower()} level of visual detail, premium believable "
                     f"materials and construction, {color_mood.lower()} color direction, "
                     f"coordinated with {floor_finish.lower()} flooring and "
-                    f"{wall_finish.lower()} walls"
+                    f"{wall_finish.lower()} walls, {rug_design.lower()} rugs, "
+                    f"{curtain_design.lower()} window treatments and a "
+                    f"{decor_set.lower()} decoration set"
                     + (f", respecting this client brief: {design_notes}" if design_notes else "")
                 ),
             }

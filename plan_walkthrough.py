@@ -183,6 +183,102 @@ STYLE_ALIASES = {
     "minimalist": "minimalist",
 }
 
+# A style is resolved as one coordinated room kit. This prevents independently
+# chosen furniture, rugs, curtains and wall decor from drifting into different
+# visual languages while still allowing every part to be overridden in the UI.
+STYLE_DESIGN_PRESETS = {
+    "modern": dict(
+        rug_design="bordered",
+        curtain_design="linen drapes",
+        decor_set="sculptural",
+        wall_treatment="wood slats",
+    ),
+    "classic": dict(
+        rug_design="vintage pattern",
+        curtain_design="layered sheers + drapes",
+        decor_set="layered",
+        wall_treatment="panel moulding",
+    ),
+    "scandinavian": dict(
+        rug_design="plain woven",
+        curtain_design="sheer panels",
+        decor_set="art & greenery",
+        wall_treatment="wood slats",
+    ),
+    "boho": dict(
+        rug_design="vintage pattern",
+        curtain_design="layered sheers + drapes",
+        decor_set="art & greenery",
+        wall_treatment="limewash",
+    ),
+    "japandi": dict(
+        rug_design="plain woven",
+        curtain_design="linen drapes",
+        decor_set="sculptural",
+        wall_treatment="wood slats",
+    ),
+    "industrial": dict(
+        rug_design="geometric",
+        curtain_design="linen drapes",
+        decor_set="sculptural",
+        wall_treatment="concrete",
+    ),
+    "minimalist": dict(
+        rug_design="plain woven",
+        curtain_design="sheer panels",
+        decor_set="minimal",
+        wall_treatment="warm paint",
+    ),
+}
+
+
+def room_design_choices(config=None, room_type=""):
+    """Resolve Auto selections into a coherent, room-appropriate style kit."""
+    config = config or {}
+    style_key = STYLE_ALIASES.get(
+        str(config.get("style", "Modern")).lower().strip(), "modern"
+    )
+    choices = dict(STYLE_DESIGN_PRESETS[style_key])
+    automatic = {}
+    for key in ("rug_design", "curtain_design", "decor_set"):
+        selected = str(config.get(key, "Auto by style")).lower().strip()
+        automatic[key] = selected == "auto by style"
+        if not automatic[key]:
+            choices[key] = selected
+
+    room_key = (room_type or config.get("room_type", "")).lower()
+    if automatic["rug_design"] and any(
+        word in room_key for word in ("kitchen", "laundry", "utility")
+    ):
+        choices["rug_design"] = "none"
+    if automatic["rug_design"] and "bath" in room_key:
+        choices["rug_design"] = "plain woven"
+    if automatic["curtain_design"] and "bath" in room_key:
+        choices["curtain_design"] = "none"
+    elif automatic["curtain_design"] and "kitchen" in room_key:
+        choices["curtain_design"] = "sheer panels"
+    if automatic["decor_set"] and any(
+        word in room_key for word in ("kitchen", "bath", "laundry", "utility")
+    ):
+        choices["decor_set"] = "minimal"
+    if "bath" in room_key:
+        choices["wall_treatment"] = "large tile"
+    elif any(word in room_key for word in ("kitchen", "laundry", "utility")):
+        choices["wall_treatment"] = "warm paint"
+
+    profile = str(config.get("design_profile", "Curated")).lower()
+    if automatic["curtain_design"] and profile == "airy":
+        choices["curtain_design"] = "sheer panels"
+    elif automatic["curtain_design"] and profile == "layered":
+        choices["curtain_design"] = "layered sheers + drapes"
+    if automatic["decor_set"] and profile == "airy":
+        choices["decor_set"] = "minimal"
+    elif automatic["decor_set"] and profile == "layered":
+        choices["decor_set"] = "layered"
+    choices["style_key"] = style_key
+    return choices
+
+
 GREEN_FOLIAGE = [0.25, 0.42, 0.22]
 TERRACOTTA = [0.72, 0.44, 0.30]
 WHITE_SOFT = [0.93, 0.92, 0.90]
@@ -240,6 +336,7 @@ WALL_FINISH_COLORS = {
     "warm paint": [0.92, 0.86, 0.76],
     "cool paint": [0.89, 0.92, 0.93],
     "limewash": [0.84, 0.79, 0.69],
+    "wallpaper": [0.88, 0.84, 0.76],
     "wood slats": [0.78, 0.72, 0.62],
     "panel moulding": [0.89, 0.87, 0.81],
     "concrete": [0.63, 0.63, 0.61],
@@ -567,18 +664,48 @@ def build_coffee_table(P, w=1.1, d=0.6):
     return ms, w, d
 
 
-def build_rug(P, w=2.6, d=1.8):
+def build_rug(P, w=2.6, d=1.8, design="plain woven"):
+    """Build a real low-pile rug geometry in the selected coordinated design."""
+    design = str(design or "plain woven").lower()
     base = _bx(w, d, 0.018, P["rug"])
     apply_archviz_material(
         base, "carpet", tint=P["rug"], tint_strength=0.48, repeat_m=0.85
     )
-    inset = _bx(
-        w - 0.18, d - 0.18, 0.010, _shade(P["rug"], 1.05), z=0.017
-    )
-    apply_archviz_material(
-        inset, "carpet", tint=P["rug"], tint_strength=0.38, repeat_m=0.85
-    )
-    return [base, inset], w, d
+    meshes = [base]
+
+    def rug_layer(width, depth, color, cx=0.0, cy=0.0, z=0.017):
+        layer = _bx(
+            max(0.04, width), max(0.04, depth), 0.010,
+            color, cx=cx, cy=cy, z=z,
+        )
+        apply_archviz_material(
+            layer, "carpet", tint=color, tint_strength=0.40, repeat_m=0.72
+        )
+        meshes.append(layer)
+
+    if design == "bordered":
+        rug_layer(w - 0.18, d - 0.18, _shade(P["rug"], 1.08))
+        rug_layer(w - 0.34, d - 0.34, P["rug"], z=0.026)
+    elif design == "geometric":
+        accent = _mix_color(P["rug"], P["accent"], 0.58)
+        stripe = max(0.055, min(0.12, w * 0.045))
+        for fraction in (-0.28, 0.0, 0.28):
+            rug_layer(stripe, d - 0.12, accent, cx=w * fraction)
+        rug_layer(w - 0.14, stripe, _shade(accent, 0.88), cy=d * 0.24, z=0.026)
+        rug_layer(w - 0.14, stripe, _shade(accent, 0.88), cy=-d * 0.24, z=0.026)
+    elif design == "vintage pattern":
+        border = _mix_color(P["rug"], P["accent"], 0.64)
+        rug_layer(w - 0.16, d - 0.16, border)
+        rug_layer(w - 0.30, d - 0.30, _shade(P["rug"], 1.10), z=0.026)
+        rug_layer(w * 0.42, d * 0.18, border, z=0.035)
+        rug_layer(w * 0.18, d * 0.42, border, z=0.035)
+    else:
+        # Fine end bands make the plain woven option read as a textile instead
+        # of the previous generic rectangular slab.
+        band = _shade(P["rug"], 0.90)
+        rug_layer(w - 0.10, 0.035, band, cy=d / 2 - 0.07)
+        rug_layer(w - 0.10, 0.035, band, cy=-d / 2 + 0.07)
+    return meshes, w, d
 
 
 def build_tv_unit(P, w=1.7, d=0.42):
@@ -1040,10 +1167,19 @@ def build_console_table(P, w=1.15, d=0.34):
     for sx in (-1, 1):
         ms.append(_bx(0.045, d - 0.04, 0.74, P["wood_dark"],
                       cx=sx * (w / 2 - 0.07)))
+    vase = _professional_detail("decor_vase", P, 0.20, 0.20, 0.30, z=0.79)
+    if vase:
+        for mesh in vase:
+            mesh.translate((-w * 0.24, 0.0, 0.0))
+        ms.extend(vase)
+    else:
+        ms.append(_cyl(0.085, 0.20, P["accent"], cx=-w * 0.23, z=0.80))
+    # A restrained pair of books replaces the former toy-like topiary sphere.
     ms.extend([
-        _cyl(0.085, 0.20, P["accent"], cx=-w * 0.23, z=0.80),
-        _sph(0.12, GREEN_FOLIAGE, cx=w * 0.25, z=1.02),
-        _cyl(0.065, 0.16, TERRACOTTA, cx=w * 0.25, z=0.80),
+        _bx(0.28, 0.16, 0.025, _shade(P["accent"], 0.82),
+            cx=w * 0.22, z=0.80),
+        _bx(0.24, 0.14, 0.025, _shade(P["wall"], 0.82),
+            cx=w * 0.22, z=0.825),
     ])
     return ms, w, d
 
@@ -1075,10 +1211,14 @@ def build_bench(P, w=1.15, d=0.42):
     return ms, w, d
 
 
-def build_round_mirror(P, diameter=0.88, z=1.55):
-    """Modeled ornate mirror with a round procedural fallback."""
-    professional = _professional_detail(
-        "wall_mirror", P, diameter, 0.10, diameter, z=z
+def build_round_mirror(P, diameter=0.88, z=1.55, ornate=False):
+    """Build a clean round mirror, using the ornate asset only for classics."""
+    professional = (
+        _professional_detail(
+            "wall_mirror", P, diameter, 0.10, diameter, z=z
+        )
+        if ornate
+        else None
     )
     if professional:
         return professional, diameter, 0.10
@@ -1342,7 +1482,10 @@ def _wall_strip(a, b, z0, z1, thick, color, inward, offset):
     """A thin box hugging the interior face of a wall between a and b."""
     a, b = np.array(a, dtype=float), np.array(b, dtype=float)
     L = float(np.linalg.norm(b - a))
-    if L < 0.05:
+    # Decorative battens and vertical moulding rails are intentionally narrow.
+    # The former 5 cm cutoff silently discarded them, leaving only the plain
+    # backing panel even when Wood slats or Panel moulding was selected.
+    if L < 0.015:
         return None
     ang = math.atan2(b[1] - a[1], b[0] - a[0])
     m = o3d.geometry.TriangleMesh.create_box(width=L, height=thick, depth=z1 - z0)
@@ -1353,7 +1496,9 @@ def _wall_strip(a, b, z0, z1, thick, color, inward, offset):
     return _paint(m, color)
 
 
-def _pleated_curtain_panel(a, b, z0, z1, color, inward, offset):
+def _pleated_curtain_panel(
+    a, b, z0, z1, color, inward, offset, tint_strength=0.62
+):
     """A real folded fabric surface rather than a flat curtain rectangle."""
     a, b = np.asarray(a, dtype=float), np.asarray(b, dtype=float)
     width = float(np.linalg.norm(b - a))
@@ -1396,13 +1541,13 @@ def _pleated_curtain_panel(a, b, z0, z1, color, inward, offset):
         mesh,
         "curtain_fabric",
         tint=color,
-        tint_strength=0.62,
+        tint_strength=tint_strength,
         triangle_uvs=np.asarray(triangle_uvs, dtype=float),
     )
     return mesh
 
 
-def build_room_trim(room_m, edges, P):
+def build_room_trim(room_m, edges, P, config=None):
     """Baseboards + cornice + window curtains — the touches that make a room
     read as *designed* rather than a bare box. Baseboards skip door openings
     (so there's no bar across a doorway); curtains hang inside each window."""
@@ -1412,6 +1557,8 @@ def build_room_trim(room_m, edges, P):
     meshes = []
     trim_col = _shade(P["wall"], 0.82)
     drape = _shade(P["shade"], 0.94)
+    choices = room_design_choices(config, (config or {}).get("room_type", ""))
+    curtain_design = choices["curtain_design"]
 
     for e in edges:
         p1, p2 = np.array(e["p1"]), np.array(e["p2"])
@@ -1449,28 +1596,43 @@ def build_room_trim(room_m, edges, P):
 
         # curtains at each window
         for typ, t0, t1 in e.get("openings", []):
-            if typ != "window":
+            if typ != "window" or curtain_design == "none":
                 continue
             wa = p1 + (p2 - p1) * t0
             wb = p1 + (p2 - p1) * t1
             wwidth = float(np.linalg.norm(wb - wa))
             top = WINDOW_SILL + WINDOW_HEIGHT + 0.22
-            # rod
+            # A single rod for sheers/linen, double projection for a layered
+            # hotel-style treatment.
             rod = _wall_strip(wa - dvec * 0.12, wb + dvec * 0.12,
                               top - 0.02, top + 0.02, 0.03, P["metal"],
                               inward, off + 0.10)
             if rod:
                 meshes.append(rod)
-            # two fabric panels hanging at the ends
-            panel_w = max(0.18, wwidth * 0.26)
-            for end, sgn in ((wa, 1), (wb, -1)):
-                pa = end + dvec * sgn * 0.02
-                pb = end + dvec * sgn * (0.02 + panel_w)
+            if curtain_design in ("sheer panels", "layered sheers + drapes"):
+                sheer = _mix_color(WHITE_SOFT, P["shade"], 0.18)
                 panel = _pleated_curtain_panel(
-                    pa, pb, 0.12, top, drape, inward, off + 0.10
+                    wa, wb, 0.16, top, sheer, inward, off + 0.065,
+                    tint_strength=0.24,
                 )
                 if panel:
                     meshes.append(panel)
+            if curtain_design in ("linen drapes", "layered sheers + drapes"):
+                panel_w = max(0.20, wwidth * (
+                    0.30 if curtain_design == "layered sheers + drapes" else 0.25
+                ))
+                outer_offset = off + (
+                    0.135 if curtain_design == "layered sheers + drapes" else 0.10
+                )
+                for end, sgn in ((wa, 1), (wb, -1)):
+                    pa = end + dvec * sgn * 0.02
+                    pb = end + dvec * sgn * (0.02 + panel_w)
+                    panel = _pleated_curtain_panel(
+                        pa, pb, 0.10, top, drape, inward, outer_offset,
+                        tint_strength=0.58,
+                    )
+                    if panel:
+                        meshes.append(panel)
     return meshes
 
 
@@ -1622,6 +1784,13 @@ def build_room_design_surfaces(room_m, edges, P, config):
     style = config.get("style", "Modern")
     profile = str(config.get("design_profile", "Curated")).lower()
     wall_finish = str(config.get("wall_finish", "Auto by style")).lower()
+    choices = room_design_choices(config, room_type)
+    style_key = choices["style_key"]
+    treatment = (
+        choices["wall_treatment"]
+        if wall_finish == "auto by style"
+        else wall_finish
+    )
     poly = Polygon([(p[0], p[1]) for p in room_m])
     if not poly.is_valid:
         poly = poly.buffer(0)
@@ -1641,56 +1810,33 @@ def build_room_design_surfaces(room_m, edges, P, config):
         width = min(length - 0.16, max_width)
         fa = middle - direction * width / 2
         fb = middle + direction * width / 2
-        feature_weight = 0.52 if wall_finish == "accent color" else 0.24
-        if wall_finish == "wood slats":
+        feature_weight = 0.52 if treatment == "accent color" else 0.16
+        if treatment == "wood slats":
             feature_color = _mix_color(P["wall"], P["wood"], 0.52)
-        elif wall_finish == "concrete":
-            feature_color = _mix_color(P["wall"], [0.50, 0.51, 0.50], 0.64)
-        elif wall_finish == "limewash":
-            feature_color = _mix_color(P["wall"], [0.76, 0.70, 0.60], 0.28)
+        elif treatment == "panel moulding":
+            feature_color = _mix_color(P["wall"], WHITE_SOFT, 0.12)
         else:
             feature_color = _mix_color(P["wall"], P["accent"], feature_weight)
-        panel = _wall_strip(
-            fa, fb, 0.11, WALL_H - 0.10, 0.028, feature_color,
-            inward, WALL_THICKNESS / 2 + 0.018,
-        )
-        if panel:
-            if wall_finish in ("wallpaper", "limewash"):
+        feature_treatments = {"wood slats", "panel moulding", "accent color"}
+        if treatment in feature_treatments:
+            panel = _wall_strip(
+                fa, fb, 0.11, WALL_H - 0.10, 0.028, feature_color,
+                inward, WALL_THICKNESS / 2 + 0.018,
+            )
+            if panel:
                 apply_archviz_material(
                     panel,
-                    "wallpaper",
+                    "plaster",
                     tint=feature_color,
-                    tint_strength=0.22,
-                    repeat_m=1.25,
+                    tint_strength=0.52,
+                    repeat_m=1.5,
+                    detail_maps=False,
                 )
-            elif wall_finish == "concrete":
-                apply_archviz_material(
-                    panel,
-                    "concrete",
-                    tint=feature_color,
-                    tint_strength=0.18,
-                    repeat_m=1.1,
-                )
-            meshes.append(panel)
+                meshes.append(panel)
 
-        style_key = STYLE_ALIASES.get(style.lower().strip(), "modern")
-        use_slats = (
-            wall_finish == "wood slats"
-            or (
-                wall_finish == "auto by style"
-                and style_key in ("modern", "japandi", "scandinavian", "industrial")
-            )
-        )
-        use_moulding = (
-            wall_finish == "panel moulding"
-            or (
-                wall_finish == "auto by style"
-                and style_key in ("classic", "boho")
-            )
-        )
-        if use_slats:
+        if treatment == "wood slats":
             slat_color = _shade(P["wood_dark"], 0.92)
-            spacing = 0.22 if profile == "airy" else 0.16
+            spacing = 0.23 if profile == "airy" else 0.17
             offset = -width / 2 + spacing / 2
             while offset < width / 2:
                 center = middle + direction * offset
@@ -1703,8 +1849,9 @@ def build_room_design_surfaces(room_m, edges, P, config):
                 if slat:
                     meshes.append(slat)
                 offset += spacing
-        elif use_moulding:
-            # Classic/boho wall moulding: two calm horizontal rails.
+        elif treatment == "panel moulding":
+            # Calm full-height proportions match the classic furniture family
+            # without mixing in the former industrial sconces or timber slats.
             moulding = _shade(P["wall"], 0.78)
             for z in (0.88, 2.10):
                 rail = _wall_strip(
@@ -1724,13 +1871,20 @@ def build_room_design_surfaces(room_m, edges, P, config):
                 if rail:
                     meshes.append(rail)
 
-        # Balanced, production-authored wall sconces add genuine projecting
-        # geometry and materials around the focal wall.
+        # Sconces are now part of a compatible classic/industrial lighting
+        # family instead of being mixed into every room style.
         service_room = any(
             word in str(room_type).lower()
             for word in ("kitchen", "bath", "laundry", "utility")
         )
-        if profile != "airy" and width >= 2.0 and not service_room:
+        use_sconces = (
+            choices["decor_set"] != "minimal"
+            and style_key in ("classic", "industrial")
+            and profile != "airy"
+            and width >= 2.0
+            and not service_room
+        )
+        if use_sconces:
             for offset in (-width * 0.34, width * 0.34):
                 center = middle + direction * offset
                 sconce = build_wall_sconce(P)
@@ -1902,6 +2056,11 @@ class RoomFurnisher:
             self.design_profile = "Airy"
         elif any(word in self.brief for word in ("luxury", "luxurious", "rich decor")):
             self.design_profile = "Layered"
+        resolved_config = dict(self.config)
+        resolved_config["design_profile"] = self.design_profile
+        self.design_choices = room_design_choices(
+            resolved_config, self.config.get("room_type", "")
+        )
         signature = "|".join([
             str(self.config.get("name", "room")),
             str(self.config.get("room_type", "")),
@@ -1938,11 +2097,28 @@ class RoomFurnisher:
 
     @property
     def wants_plants(self):
-        return "no plant" not in self.brief
+        if "no plant" in self.brief:
+            return False
+        if "plant" in self.brief or "greenery" in self.brief:
+            return True
+        return self.design_choices["decor_set"] in (
+            "art & greenery", "layered"
+        )
 
     @property
     def wants_rugs(self):
-        return "no rug" not in self.brief
+        return (
+            "no rug" not in self.brief
+            and self.design_choices["rug_design"] != "none"
+        )
+
+    @property
+    def rug_design(self):
+        return self.design_choices["rug_design"]
+
+    @property
+    def wants_wall_decor(self):
+        return self.design_choices["decor_set"] != "minimal"
 
     def furniture_builder(self, asset_key, procedural_builder):
         """Load a native catalog model, with Tripo kept for compatibility."""
@@ -1968,9 +2144,7 @@ class RoomFurnisher:
                             asset_key == "bed"
                             and not any(
                                 word in str(style_name).lower()
-                                for word in (
-                                    "classic", "traditional", "bohemian", "boho"
-                                )
+                                for word in ("classic", "traditional")
                             )
                         )
                         or asset_key == "kitchen_island"
@@ -2264,6 +2438,8 @@ class RoomFurnisher:
 
     def art_on(self, slot_info, w=1.25):
         """Place a real modeled wall object behind an anchored furnishing."""
+        if not self.wants_wall_decor:
+            return
         s = slot_info["slot"]
         pos = np.array(slot_info["pos"]) - slot_info["n"] * (slot_info["d"] / 2 + 0.01)
         room_type = str(self.config.get("room_type", "")).lower()
@@ -2272,6 +2448,26 @@ class RoomFurnisher:
         else:
             built = build_art(self.P, w=w)
         self.add(built, pos, slot_info["yaw"], block=False, check=False)
+
+    def mirror_on(self, slot_info, diameter=0.82):
+        """Place a contrasting modeled mirror instead of repeating wall art."""
+        if not self.wants_wall_decor:
+            return
+        pos = (
+            np.array(slot_info["pos"])
+            - slot_info["n"] * (slot_info["d"] / 2 + 0.01)
+        )
+        self.add(
+            build_round_mirror(
+                self.P,
+                diameter=diameter,
+                ornate=self.design_choices["style_key"] == "classic",
+            ),
+            pos,
+            slot_info["yaw"],
+            block=False,
+            check=False,
+        )
 
     def feature_on(self, slot_info, w=None):
         """Add a designed wall treatment behind the room's visual anchor."""
@@ -2301,7 +2497,7 @@ class RoomFurnisher:
         if sofa:
             n, s = sofa["n"], sofa["s"]
             rug_pos = np.array(sofa["pos"]) + n * 1.55
-            rug = build_rug(self.P)
+            rug = build_rug(self.P, design=self.rug_design)
             if (self.wants_rugs and
                     footprint_poly(rug_pos, sofa["yaw"], rug[1], rug[2]).within(self.inset)):
                 self.add(rug, rug_pos, sofa["yaw"], block=False,
@@ -2343,7 +2539,7 @@ class RoomFurnisher:
         if not self.airy:
             console = self.against_wall(build_console_table)
             if console and self.layered:
-                self.art_on(console, w=0.85)
+                self.mirror_on(console, diameter=0.78)
         self.pendant()
 
     def furnish_bedroom(self):
@@ -2367,7 +2563,10 @@ class RoomFurnisher:
                 self.add(ns, ns_pos, yaw)
             rug_pos = np.array(bed["pos"]) + n * (bed["d"] / 2 - 0.4)
             if self.wants_rugs:
-                self.add(build_rug(self.P, w=bed["w"] + 1.2, d=1.6), rug_pos, yaw,
+                self.add(build_rug(
+                    self.P, w=bed["w"] + 1.2, d=1.6,
+                    design=self.rug_design,
+                ), rug_pos, yaw,
                          block=False, avoid_doors=False, check=False)
             if self.airy:
                 self.art_on(bed, w=1.1)
@@ -2387,7 +2586,11 @@ class RoomFurnisher:
         if self.wants_plants:
             self.in_corner(build_plant, tall=False)
         if self.layered:
-            self.against_wall(build_round_mirror, block=False)
+            self.against_wall(
+                build_round_mirror,
+                block=False,
+                ornate=self.design_choices["style_key"] == "classic",
+            )
         self.pendant()
 
     def furnish_kitchen(self):
@@ -2558,7 +2761,9 @@ class RoomFurnisher:
         self.against_wall(build_towel_rail, slots=slots, block=False)
         if self.wants_rugs:
             self.add(
-                build_rug(self.P, w=0.85, d=0.55),
+                build_rug(
+                    self.P, w=0.85, d=0.55, design=self.rug_design
+                ),
                 self.centroid, 0.0, block=False, avoid_doors=False,
             )
         if self.wants_plants:
@@ -2567,12 +2772,15 @@ class RoomFurnisher:
 
     def furnish_generic(self):
         if self.wants_rugs:
-            self.add(build_rug(self.P, 2.0, 1.4), self.centroid, 0.0,
+            self.add(build_rug(
+                self.P, 2.0, 1.4, design=self.rug_design
+            ), self.centroid, 0.0,
                      block=False, avoid_doors=False, check=False)
         if self.wants_plants:
             self.in_corner(build_plant)
         self.against_wall(build_console_table)
-        self.against_wall(build_round_mirror, block=False)
+        if self.wants_wall_decor:
+            self.against_wall(build_round_mirror, block=False)
         self.pendant()
 
     def furnish(self, room_type):
@@ -2672,7 +2880,7 @@ def build_scene(rooms_px, doors_px, windows_px, px_per_m=None, room_configs=None
             P["wall"],
             wall_material(cfg, rtype, style),
         ))
-        meshes.extend(build_room_trim(room, all_edges[i], P))
+        meshes.extend(build_room_trim(room, all_edges[i], P, cfg))
         if cfg.get("whole_room_design", True):
             meshes.extend(build_room_design_surfaces(
                 room, all_edges[i], P, cfg

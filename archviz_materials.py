@@ -24,6 +24,9 @@ MATERIALS = {
     "warm_oak": ("WoodFloor007", 2.2, 0.42),
     "dark_wood": ("WoodFloor041", 2.4, 0.56),
     "plaster": ("Plaster001", 1.5, 0.88),
+    # Wallpaper002C has the soft mineral movement needed for limewash when
+    # strongly tinted, while retaining its authored wall-scale surface.
+    "limewash": ("Wallpaper002C", 1.3, 0.90),
     "wallpaper": ("Wallpaper002C", 1.3, 0.82),
     "bathroom_tile": ("Tiles133A", 1.15, 0.34),
     "marble": ("Marble019", 1.8, 0.24),
@@ -79,16 +82,16 @@ def _projected_triangle_uvs(mesh, repeat_m: float):
     axis = np.argmax(np.abs(normals), axis=1)
     uvs = np.empty((len(triangles), 3, 2), dtype=float)
     minimum = vertices.min(axis=0)
-    extent = np.maximum(vertices.max(axis=0) - minimum, 1e-6)
+    repeat_m = max(float(repeat_m), 0.05)
     for index in range(len(triangles)):
         points = tri_vertices[index]
         if axis[index] == 2:       # floor / ceiling
-            uv = (points[:, [0, 1]] - minimum[[0, 1]]) / extent[[0, 1]]
+            uv = (points[:, [0, 1]] - minimum[[0, 1]]) / repeat_m
         elif axis[index] == 0:     # wall whose normal is mainly X
-            uv = (points[:, [1, 2]] - minimum[[1, 2]]) / extent[[1, 2]]
+            uv = (points[:, [1, 2]] - minimum[[1, 2]]) / repeat_m
         else:                      # wall whose normal is mainly Y
-            uv = (points[:, [0, 2]] - minimum[[0, 2]]) / extent[[0, 2]]
-        uvs[index] = np.clip(uv, 0.0, 1.0)
+            uv = (points[:, [0, 2]] - minimum[[0, 2]]) / repeat_m
+        uvs[index] = uv
     return uvs.reshape((-1, 2))
 
 
@@ -222,18 +225,19 @@ def floor_material(config, room_type: str, style: str) -> str:
     finish = str((config or {}).get("floor_finish", "Auto by style")).lower()
     room_key = (room_type or "").lower()
     style_key = (style or "").lower()
-    if finish == "natural stone":
-        return "marble"
-    if finish == "polished concrete":
-        return "concrete"
-    if finish == "terrazzo":
-        return "terrazzo"
-    if finish == "large tile" or "bath" in room_key:
+    explicit = {
+        "light oak": "warm_oak",
+        "warm oak": "warm_oak",
+        "dark walnut": "dark_wood",
+        "natural stone": "marble",
+        "polished concrete": "concrete",
+        "terrazzo": "terrazzo",
+        "large tile": "bathroom_tile",
+    }
+    if finish != "auto by style":
+        return explicit.get(finish, "warm_oak")
+    if "bath" in room_key:
         return "bathroom_tile"
-    if finish == "dark walnut":
-        return "dark_wood"
-    if finish in {"light oak", "warm oak"}:
-        return "warm_oak"
     if "kitchen" in room_key:
         return "bathroom_tile"
     if "industrial" in style_key:
@@ -247,16 +251,24 @@ def wall_material(config, room_type: str, style: str) -> str:
     finish = str((config or {}).get("wall_finish", "Auto by style")).lower()
     room_key = (room_type or "").lower()
     style_key = (style or "").lower()
+    # Explicit user choices always win. Previously the bathroom and
+    # Industrial defaults were checked first, so the wall selector appeared
+    # broken even though the selected value reached the renderer.
+    if finish != "auto by style":
+        return {
+            "concrete": "concrete",
+            "wallpaper": "wallpaper",
+            "limewash": "limewash",
+            "warm paint": "plaster",
+            "cool paint": "plaster",
+            "wood slats": "plaster",
+            "panel moulding": "plaster",
+            "accent color": "plaster",
+        }.get(finish, "plaster")
     if "bath" in room_key:
         return "bathroom_tile"
-    if finish == "concrete" or "industrial" in style_key:
+    if "industrial" in style_key:
         return "concrete"
-    if finish == "wallpaper":
-        return "wallpaper"
-    if finish == "limewash":
-        return "wallpaper"
-    if finish == "auto by style" and any(
-        word in style_key for word in ("classic", "traditional", "bohemian", "boho")
-    ):
-        return "wallpaper"
+    if any(word in style_key for word in ("bohemian", "boho")):
+        return "limewash"
     return "plaster"
