@@ -128,6 +128,8 @@ MODERN_STYLE_WORDS = {
 CLASSIC_STYLE_WORDS = {"classic", "traditional", "bohemian", "boho"}
 
 _MESH_CACHE = {}
+_PBR_CACHE = {}
+_PBR_MESH_MATERIALS = {}
 
 
 def _load_trimesh_scene(path):
@@ -146,6 +148,11 @@ def _load_trimesh_scene(path):
 
 def _shade_materials(mesh):
     """Apply soft fixed lighting while keeping every authored material region."""
+    if mesh.has_triangle_uvs() and len(mesh.textures):
+        # Textured catalog models are lit by the renderer. Baking light into
+        # their vertex colors would multiply the authored albedo twice and
+        # make fabric, wood and metal look muddy.
+        return mesh
     mesh.compute_vertex_normals()
     normals = np.asarray(mesh.vertex_normals)
     colors = np.asarray(mesh.vertex_colors)
@@ -226,6 +233,87 @@ def _coordinate_material(source_color, target_color, professional=False):
     )
 
 
+def _image_pixels(image):
+    if image is None:
+        return None
+    pixels = np.asarray(image.convert("RGB"), dtype=np.uint8)
+    if pixels.ndim != 3 or pixels.shape[2] < 3:
+        return None
+    return np.ascontiguousarray(pixels[:, :, :3])
+
+
+def _authored_texture(source, target_color, professional=False):
+    """Return the model's mapped albedo and UVs, retaining real material detail."""
+    visual = getattr(source, "visual", None)
+    material = getattr(visual, "material", None)
+    uv = getattr(visual, "uv", None)
+    if material is None or uv is None:
+        return None, None, None
+
+    image = getattr(material, "baseColorTexture", None)
+    if image is None:
+        image = getattr(material, "image", None)
+    if image is None:
+        return None, None, None
+
+    pixels = _image_pixels(image)
+    if pixels is None:
+        return None, None, None
+    coordinated = _coordinate_material(
+        pixels[:, :, :3].astype(np.float32) / 255.0,
+        target_color,
+        professional=professional,
+    )
+    texture = np.ascontiguousarray(
+        np.clip(np.rint(coordinated * 255.0), 0, 255).astype(np.uint8)
+    )
+    pbr = {
+        "albedo": texture,
+        "normal": _image_pixels(getattr(material, "normalTexture", None)),
+        "arm": None,
+        "roughness": float(
+            getattr(material, "roughnessFactor", None) or 0.52
+        ),
+        "metallic": float(
+            getattr(material, "metallicFactor", None) or 0.0
+        ),
+    }
+    metallic_roughness = _image_pixels(
+        getattr(material, "metallicRoughnessTexture", None)
+    )
+    if metallic_roughness is not None:
+        arm = metallic_roughness.copy()
+        occlusion = _image_pixels(getattr(material, "occlusionTexture", None))
+        arm[:, :, 0] = (
+            occlusion[:, :, 0]
+            if occlusion is not None and occlusion.shape[:2] == arm.shape[:2]
+            else 255
+        )
+        pbr["arm"] = arm
+    return np.asarray(uv, dtype=float), texture, pbr
+
+
+def catalog_material_record_for_mesh(mesh):
+    """Return the catalog model's complete glTF PBR material, when available."""
+    spec = _PBR_MESH_MATERIALS.get(id(mesh))
+    if spec is None:
+        return None
+    from open3d.visualization import rendering
+
+    record = rendering.MaterialRecord()
+    record.shader = "defaultLit"
+    record.base_color = [1.0, 1.0, 1.0, 1.0]
+    record.base_roughness = spec["roughness"]
+    record.base_metallic = spec["metallic"]
+    record.base_reflectance = 0.42
+    record.albedo_img = o3d.geometry.Image(spec["albedo"].copy())
+    if spec["normal"] is not None:
+        record.normal_img = o3d.geometry.Image(spec["normal"].copy())
+    if spec["arm"] is not None:
+        record.ao_rough_metal_img = o3d.geometry.Image(spec["arm"].copy())
+    return record
+
+
 def catalog_status() -> tuple[bool, str]:
     """Return whether every required native model is installed."""
     required = set(DEFAULT_MODELS.values())
@@ -269,7 +357,11 @@ def load_catalog_asset(
         round(height, 3), material_key,
     )
     if cache_key in _MESH_CACHE:
-        return [copy.deepcopy(mesh) for mesh in _MESH_CACHE[cache_key]]
+        meshes = [copy.deepcopy(mesh) for mesh in _MESH_CACHE[cache_key]]
+        for mesh, spec in zip(meshes, _PBR_CACHE.get(cache_key, [])):
+            if spec is not None:
+                _PBR_MESH_MATERIALS[id(mesh)] = spec
+        return meshes
 
     scene = _load_trimesh_scene(path)
     source_components = list(scene.dump(concatenate=False))
@@ -286,33 +378,53 @@ def load_catalog_asset(
         vertices = np.column_stack(
             (-source_vertices[:, 0], source_vertices[:, 2], source_vertices[:, 1])
         )
-        color_visual = source.visual.to_color()
-        vertex_colors = np.asarray(
-            getattr(color_visual, "vertex_colors", [184, 184, 184, 255]),
-            dtype=float,
+        professional = PRO_ROOT in path.parents
+        uv, texture, pbr = _authored_texture(
+            source, material_target, professional=professional
         )
-        if vertex_colors.ndim == 1:
-            vertex_colors = vertex_colors.reshape(1, -1)
-        vertex_colors = vertex_colors[:, :3]
-        if vertex_colors.max(initial=0.0) > 1.0:
-            vertex_colors /= 255.0
-        if len(vertex_colors) != len(source_vertices):
-            average = np.mean(vertex_colors, axis=0, keepdims=True)
-            vertex_colors = np.repeat(
-                average, len(source_vertices), axis=0
+        if uv is not None and len(uv) == len(source_vertices):
+            # White vertex colors let the mapped albedo reach both the legacy
+            # walkthrough and the modern PBR renderer without a second tint.
+            vertex_colors = np.ones((len(source_vertices), 3), dtype=float)
+        else:
+            uv, texture, pbr = None, None, None
+            color_visual = source.visual.to_color()
+            vertex_colors = np.asarray(
+                getattr(color_visual, "vertex_colors", [184, 184, 184, 255]),
+                dtype=float,
             )
-        vertex_colors = _coordinate_material(
-            vertex_colors,
-            material_target,
-            professional=PRO_ROOT in path.parents,
-        )
+            if vertex_colors.ndim == 1:
+                vertex_colors = vertex_colors.reshape(1, -1)
+            vertex_colors = vertex_colors[:, :3]
+            if vertex_colors.max(initial=0.0) > 1.0:
+                vertex_colors /= 255.0
+            if len(vertex_colors) != len(source_vertices):
+                average = np.mean(vertex_colors, axis=0, keepdims=True)
+                vertex_colors = np.repeat(
+                    average, len(source_vertices), axis=0
+                )
+            vertex_colors = _coordinate_material(
+                vertex_colors,
+                material_target,
+                professional=professional,
+            )
         component_data.append(
-            (vertices, np.asarray(source.faces, dtype=np.int32), vertex_colors)
+            (
+                vertices,
+                np.asarray(source.faces, dtype=np.int32),
+                vertex_colors,
+                uv,
+                texture,
+                pbr,
+            )
         )
     if not component_data:
         return None
 
-    all_vertices = np.vstack([vertices for vertices, _faces, _color in component_data])
+    all_vertices = np.vstack([
+        vertices
+        for vertices, _faces, _color, _uv, _texture, _pbr in component_data
+    ])
     source_min = all_vertices.min(axis=0)
     source_max = all_vertices.max(axis=0)
     source_extents = source_max - source_min
@@ -323,7 +435,8 @@ def load_catalog_asset(
     scale = target_extents / np.maximum(source_extents, 1e-6)
     center_xy = target_extents[:2] / 2
     meshes = []
-    for vertices, faces, colors in component_data:
+    pbr_specs = []
+    for vertices, faces, colors, uv, texture, pbr in component_data:
         normalized = (vertices - source_min) * scale
         normalized[:, 0] -= center_xy[0]
         normalized[:, 1] -= center_xy[1]
@@ -333,9 +446,20 @@ def load_catalog_asset(
         mesh.vertex_colors = o3d.utility.Vector3dVector(
             np.clip(colors, 0, 1)
         )
+        if uv is not None and texture is not None:
+            triangle_uvs = uv[faces].reshape((-1, 2))
+            mesh.triangle_uvs = o3d.utility.Vector2dVector(triangle_uvs)
+            mesh.triangle_material_ids = o3d.utility.IntVector(
+                np.zeros(len(faces), dtype=np.int32)
+            )
+            mesh.textures = [o3d.geometry.Image(texture)]
         mesh.compute_vertex_normals()
         _shade_materials(mesh)
+        if pbr is not None:
+            _PBR_MESH_MATERIALS[id(mesh)] = pbr
+        pbr_specs.append(pbr)
         meshes.append(mesh)
 
     _MESH_CACHE[cache_key] = [copy.deepcopy(mesh) for mesh in meshes]
+    _PBR_CACHE[cache_key] = pbr_specs
     return meshes

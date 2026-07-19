@@ -44,6 +44,12 @@ from plan3d import (
     WINDOW_HEIGHT,
     WALL_THICKNESS,
 )
+from archviz_materials import (
+    apply_archviz_material,
+    floor_material,
+    material_record_for_mesh,
+    wall_material,
+)
 
 # ================= WALKTHROUGH CONFIG (real-world scale) =================
 WALL_H = 2.8               # ceiling height (m)
@@ -382,6 +388,8 @@ def bake_lighting(mesh):
     colour gradients (window glass, sky, light spill) or near-white emissive
     surfaces are returned untouched so their glow survives.
     """
+    if mesh.has_triangle_uvs() and len(mesh.textures):
+        return mesh
     tris = np.asarray(mesh.triangles)
     verts = np.asarray(mesh.vertices)
     cols = np.asarray(mesh.vertex_colors)
@@ -560,8 +568,17 @@ def build_coffee_table(P, w=1.1, d=0.6):
 
 
 def build_rug(P, w=2.6, d=1.8):
-    return [_bx(w, d, 0.015, P["rug"]),
-            _bx(w - 0.24, d - 0.24, 0.017, _shade(P["rug"], 1.05))], w, d
+    base = _bx(w, d, 0.018, P["rug"])
+    apply_archviz_material(
+        base, "carpet", tint=P["rug"], tint_strength=0.48, repeat_m=0.85
+    )
+    inset = _bx(
+        w - 0.18, d - 0.18, 0.010, _shade(P["rug"], 1.05), z=0.017
+    )
+    apply_archviz_material(
+        inset, "carpet", tint=P["rug"], tint_strength=0.38, repeat_m=0.85
+    )
+    return [base, inset], w, d
 
 
 def build_tv_unit(P, w=1.7, d=0.42):
@@ -608,6 +625,28 @@ def build_bed(P, w=1.8, d=2.15):
         0.72, 0.22, 0.18, _shade(P["cushion"], 0.88),
         cy=-(d / 2 - 0.52), z=0.70, roundness=0.32,
     ))
+    apply_archviz_material(
+        ms[0],
+        "dark_wood",
+        tint=P["wood_dark"],
+        tint_strength=0.20,
+        repeat_m=1.35,
+    )
+    for index, tint in (
+        (1, fabric),
+        (2, linen),
+        (3, P["cushion"]),
+        (4, linen),
+        (5, linen),
+        (6, _shade(P["cushion"], 0.88)),
+    ):
+        apply_archviz_material(
+            ms[index],
+            "curtain_fabric",
+            tint=tint,
+            tint_strength=0.68,
+            repeat_m=0.46,
+        )
     # Tufted headboard buttons and slim feet make this read as an authored
     # furniture component rather than a set of primitive boxes.
     for x in np.linspace(-w * 0.35, w * 0.35, 5):
@@ -633,6 +672,9 @@ def build_nightstand(P, w=0.48, d=0.42):
         _cyl(0.03, 0.30, P["metal"], z=0.50),
         _cyl(0.13, 0.17, P["shade"], z=0.80),                       # lamp shade
     ]
+    apply_archviz_material(
+        ms[0], "warm_oak", tint=P["wood"], tint_strength=0.24, repeat_m=0.72
+    )
     return ms, w, d
 
 
@@ -669,13 +711,17 @@ def build_chair(P, w=0.46, d=0.48):
 
 
 def build_sideboard(P, w=1.6, d=0.45):
-    return [
+    meshes = [
         _bx(w, d, 0.8, P["wood"]),
         _bx(w, d, 0.02, _shade(P["wood"], 1.12), z=0.80),
         _bx(0.30, 0.20, 0.35, P["accent"], cx=-w * 0.25, z=0.82),
         _sph(0.16, GREEN_FOLIAGE, cx=w * 0.28, z=1.05),
         _cyl(0.09, 0.22, TERRACOTTA, cx=w * 0.28, z=0.82),
-    ], w, d
+    ]
+    apply_archviz_material(
+        meshes[0], "warm_oak", tint=P["wood"], tint_strength=0.22, repeat_m=1.2
+    )
+    return meshes, w, d
 
 
 def build_kitchen_run(P, w=3.0, d=0.64):
@@ -692,16 +738,58 @@ def build_kitchen_run(P, w=3.0, d=0.64):
              cy=-(d / 2 - 0.08), z=0.92),                           # faucet
         _cyl(0.10, 0.17, P["accent"], cx=w * 0.39, z=0.93),         # utensil pot
     ]
-    # cabinet door seams
+    apply_archviz_material(ms[1], "marble", tint=P["counter"], tint_strength=0.10)
+    apply_archviz_material(
+        ms[2], "bathroom_tile", tint=P["wall"], tint_strength=0.18
+    )
+    # Shallow individual door fronts and handles make the cabinetry read as a
+    # fitted kitchen system rather than one uninterrupted box.
     n_doors = max(2, int(w / 0.6))
-    for i in range(1, n_doors):
-        x = -w / 2 + i * (w / n_doors)
-        ms.append(_bx(0.015, 0.02, 0.78, _shade(P["cabinet"], 0.75),
-                      cx=x, cy=(d / 2 - 0.03), z=0.05))
-        ms.append(_bx(
-            0.012, 0.038, 0.48, _shade(P["counter"], 0.78),
-            cx=x, cy=-(d / 2 + 0.022), z=0.95,
+    base_panels = []
+    base_panel_w = w / n_doors - 0.022
+    for index in range(n_doors):
+        x = -w / 2 + (index + 0.5) * (w / n_doors)
+        base_panels.append(_bx(
+            base_panel_w,
+            0.025,
+            0.76,
+            _shade(P["cabinet"], 0.98),
+            cx=x,
+            cy=d / 2 - 0.008,
+            z=0.06,
         ))
+        ms.append(_bx(
+            0.12, 0.035, 0.025, P["metal"],
+            cx=x, cy=d / 2 + 0.012, z=0.48,
+        ))
+    base_fronts = base_panels[0]
+    for panel in base_panels[1:]:
+        base_fronts += panel
+    ms.append(base_fronts)
+
+    upper_w = w * 0.72
+    n_upper = max(2, int(upper_w / 0.55))
+    upper_left = -w * 0.12 - upper_w / 2
+    upper_panels = []
+    for index in range(n_upper):
+        x = upper_left + (index + 0.5) * (upper_w / n_upper)
+        upper_panels.append(_bx(
+            upper_w / n_upper - 0.022,
+            0.025,
+            0.66,
+            _shade(P["cabinet"], 0.98),
+            cx=x,
+            cy=0.042,
+            z=1.53,
+        ))
+        ms.append(_bx(
+            0.12, 0.035, 0.025, P["metal"],
+            cx=x, cy=0.062, z=1.56,
+        ))
+    upper_fronts = upper_panels[0]
+    for panel in upper_panels[1:]:
+        upper_fronts += panel
+    ms.append(upper_fronts)
     return ms, w, d
 
 
@@ -719,6 +807,15 @@ def build_island(P, w=1.7, d=0.9):
         _bx(w + 0.08, d + 0.08, 0.05, P["counter"], z=0.88),
         _cyl(0.11, 0.28, P["accent"], cx=-w * 0.2, z=0.93),         # bowl
     ]
+    apply_archviz_material(
+        ms[0],
+        "warm_oak",
+        tint=P["cabinet"],
+        tint_strength=0.46,
+        repeat_m=1.25,
+        detail_maps=False,
+    )
+    apply_archviz_material(ms[1], "marble", tint=P["counter"], tint_strength=0.10)
     for sx in (-1, 1):
         ms.append(_cyl(0.17, 0.03, P["wood"], cx=sx * w * 0.22,
                        cy=(d / 2 + 0.32), z=0.62))                  # stool seats
@@ -1163,7 +1260,7 @@ def _door_frame(op1, op2, wall_angle):
             bar(-0.02, L + 0.02, DOOR_HEIGHT - 0.03, DOOR_HEIGHT + 0.07)]
 
 
-def build_walls(edges, wall_color):
+def build_walls(edges, wall_color, material_name="plaster"):
     """Wall meshes with door/window cutouts, at walkthrough wall height.
 
     Wall pieces that end at a polygon corner are extended slightly so
@@ -1171,6 +1268,12 @@ def build_walls(edges, wall_color):
     slits (important for auto-detected polygons, which are not exact).
     """
     meshes = []
+    wall_meshes = []
+
+    def add_wall(mesh):
+        if mesh is not None:
+            wall_meshes.append(mesh)
+
     for e in edges:
         p1, p2 = np.array(e["p1"]), np.array(e["p2"])
         if e["length"] < 0.1:
@@ -1198,30 +1301,36 @@ def build_walls(edges, wall_color):
             if (t0 - last) * length > 0.02:     # absolute 2 cm, not 1% of edge
                 w = seg(p1 + (p2 - p1) * last, p1 + (p2 - p1) * t0,
                         0, WALL_H, ext_a=(last <= 0.001))
-                if w:
-                    meshes.append(w)
+                add_wall(w)
             op1, op2 = p1 + (p2 - p1) * t0, p1 + (p2 - p1) * t1
             if typ in ("door", "door_hole"):
                 w = wall_segment(op1, op2, DOOR_HEIGHT, WALL_H, wall_color)
-                if w:
-                    meshes.append(w)
+                add_wall(w)
                 if typ == "door":
                     meshes.extend(_door_frame(op1, op2, wall_angle))
             else:
                 w = wall_segment(op1, op2, 0, WINDOW_SILL, wall_color)
-                if w:
-                    meshes.append(w)
+                add_wall(w)
                 w = wall_segment(op1, op2, WINDOW_SILL + WINDOW_HEIGHT, WALL_H,
                                  wall_color)
-                if w:
-                    meshes.append(w)
+                add_wall(w)
                 meshes.extend(create_window_geometry(op1, op2, wall_angle))
             last = t1
         if (1.0 - last) * length > 0.02:        # absolute 2 cm, not 1% of edge
             w = seg(p1 + (p2 - p1) * last, p2, 0, WALL_H,
                     ext_a=(last <= 0.001), ext_b=True)
-            if w:
-                meshes.append(w)
+            add_wall(w)
+    if wall_meshes:
+        combined = wall_meshes[0]
+        for part in wall_meshes[1:]:
+            combined += part
+        apply_archviz_material(
+            combined,
+            material_name,
+            tint=wall_color,
+            tint_strength=0.32 if material_name != "wallpaper" else 0.18,
+        )
+        meshes.insert(0, combined)
     return meshes
 
 
@@ -1242,6 +1351,55 @@ def _wall_strip(a, b, z0, z1, thick, color, inward, offset):
     base = a + inward * offset
     m.translate((base[0], base[1], z0))
     return _paint(m, color)
+
+
+def _pleated_curtain_panel(a, b, z0, z1, color, inward, offset):
+    """A real folded fabric surface rather than a flat curtain rectangle."""
+    a, b = np.asarray(a, dtype=float), np.asarray(b, dtype=float)
+    width = float(np.linalg.norm(b - a))
+    if width < 0.08:
+        return None
+    direction = (b - a) / width
+    segments = max(12, int(math.ceil(width / 0.055)))
+    rows = 4
+    vertices = []
+    grid_uv = []
+    for row in range(rows):
+        v = row / (rows - 1)
+        z = z0 + (z1 - z0) * v
+        fullness = 1.12 - 0.18 * v
+        for column in range(segments + 1):
+            u = column / segments
+            point = a + direction * (width * u)
+            fold = math.sin(u * segments * math.pi) * 0.045 * fullness
+            point = point + inward * (offset + fold)
+            vertices.append((point[0], point[1], z))
+            grid_uv.append((u * max(width / 0.42, 1.0), v * (z1 - z0) / 0.42))
+
+    triangles = []
+    triangle_uvs = []
+    for row in range(rows - 1):
+        for column in range(segments):
+            p0 = row * (segments + 1) + column
+            p1 = p0 + 1
+            p2 = p0 + segments + 1
+            p3 = p2 + 1
+            for tri in ((p0, p2, p1), (p1, p2, p3)):
+                triangles.append(tri)
+                triangle_uvs.extend(grid_uv[index] for index in tri)
+
+    mesh = o3d.geometry.TriangleMesh()
+    mesh.vertices = o3d.utility.Vector3dVector(np.asarray(vertices, dtype=float))
+    mesh.triangles = o3d.utility.Vector3iVector(np.asarray(triangles, dtype=np.int32))
+    _paint(mesh, color)
+    apply_archviz_material(
+        mesh,
+        "curtain_fabric",
+        tint=color,
+        tint_strength=0.62,
+        triangle_uvs=np.asarray(triangle_uvs, dtype=float),
+    )
+    return mesh
 
 
 def build_room_trim(room_m, edges, P):
@@ -1308,8 +1466,9 @@ def build_room_trim(room_m, edges, P):
             for end, sgn in ((wa, 1), (wb, -1)):
                 pa = end + dvec * sgn * 0.02
                 pb = end + dvec * sgn * (0.02 + panel_w)
-                panel = _wall_strip(pa, pb, 0.12, top, 0.06, drape,
-                                    inward, off + 0.10)
+                panel = _pleated_curtain_panel(
+                    pa, pb, 0.12, top, drape, inward, off + 0.10
+                )
                 if panel:
                     meshes.append(panel)
     return meshes
@@ -1466,7 +1625,9 @@ def build_room_design_surfaces(room_m, edges, P, config):
     poly = Polygon([(p[0], p[1]) for p in room_m])
     if not poly.is_valid:
         poly = poly.buffer(0)
-    meshes = build_floor_finish(room_m, P, room_type, style, config)
+    # The room slab now carries a tiled PBR floor. Extra procedural lines
+    # duplicated its real boards/grout and made the finish look synthetic.
+    meshes = []
 
     # One focal wall, chosen from the longest uninterrupted wall span.
     spans = _free_wall_spans(edges)
@@ -1494,6 +1655,22 @@ def build_room_design_surfaces(room_m, edges, P, config):
             inward, WALL_THICKNESS / 2 + 0.018,
         )
         if panel:
+            if wall_finish in ("wallpaper", "limewash"):
+                apply_archviz_material(
+                    panel,
+                    "wallpaper",
+                    tint=feature_color,
+                    tint_strength=0.22,
+                    repeat_m=1.25,
+                )
+            elif wall_finish == "concrete":
+                apply_archviz_material(
+                    panel,
+                    "concrete",
+                    tint=feature_color,
+                    tint_strength=0.18,
+                    repeat_m=1.1,
+                )
             meshes.append(panel)
 
         style_key = STYLE_ALIASES.get(style.lower().strip(), "modern")
@@ -1549,7 +1726,11 @@ def build_room_design_surfaces(room_m, edges, P, config):
 
         # Balanced, production-authored wall sconces add genuine projecting
         # geometry and materials around the focal wall.
-        if profile != "airy" and width >= 2.0:
+        service_room = any(
+            word in str(room_type).lower()
+            for word in ("kitchen", "bath", "laundry", "utility")
+        )
+        if profile != "airy" and width >= 2.0 and not service_room:
             for offset in (-width * 0.34, width * 0.34):
                 center = middle + direction * offset
                 sconce = build_wall_sconce(P)
@@ -1782,18 +1963,21 @@ class RoomFurnisher:
                     from furniture_catalog import load_catalog_asset
 
                     style_name = self.config.get("style", "Modern")
-                    use_designer_bed = (
-                        asset_key == "bed"
-                        and not any(
-                            word in str(style_name).lower()
-                            for word in (
-                                "classic", "traditional", "bohemian", "boho"
+                    use_designer_geometry = (
+                        (
+                            asset_key == "bed"
+                            and not any(
+                                word in str(style_name).lower()
+                                for word in (
+                                    "classic", "traditional", "bohemian", "boho"
+                                )
                             )
                         )
+                        or asset_key == "kitchen_island"
                     )
                     generated = (
                         None
-                        if use_designer_bed
+                        if use_designer_geometry
                         else load_catalog_asset(
                             asset_key,
                             style_name,
@@ -2471,12 +2655,23 @@ def build_scene(rooms_px, doors_px, windows_px, px_per_m=None, room_configs=None
         room_polys.append(poly)
 
         # floor + ceiling in the room's style
-        meshes.append(floor_mesh(room, P["floor"]))
+        floor = floor_mesh(room, P["floor"])
+        apply_archviz_material(
+            floor,
+            floor_material(cfg, rtype, style),
+            tint=P["floor"],
+            tint_strength=0.16,
+        )
+        meshes.append(floor)
         ceil = floor_mesh(room, P.get("ceiling", CEILING_COLOR))
         ceil.translate((0, 0, WALL_H))
         meshes.append(ceil)
 
-        meshes.extend(build_walls(all_edges[i], P["wall"]))
+        meshes.extend(build_walls(
+            all_edges[i],
+            P["wall"],
+            wall_material(cfg, rtype, style),
+        ))
         meshes.extend(build_room_trim(room, all_edges[i], P))
         if cfg.get("whole_room_design", True):
             meshes.extend(build_room_design_surfaces(
@@ -2568,16 +2763,11 @@ def build_scene(rooms_px, doors_px, windows_px, px_per_m=None, room_configs=None
     if spawn is None:
         spawn = np.array([room_polys[0].centroid.x, room_polys[0].centroid.y])
 
-    # Bake soft directional lighting into every opaque mesh (glass / sky /
-    # light-spill are auto-skipped) so the whole scene reads as lit interior
-    # design instead of flat colour.
-    editable_mesh_ids = {
-        id(mesh)
-        for furniture in furniture_objects
-        for mesh in furniture["meshes"]
-    }
+    # Keep authored normals and mapped materials intact. The realtime light rig
+    # now shades both architectural finishes and catalog furniture; baking
+    # colors here would flatten textures and double-darken the room.
     meshes = [
-        mesh if id(mesh) in editable_mesh_ids else bake_lighting(mesh)
+        mesh
         for mesh in meshes
         if mesh is not None
     ]
@@ -2627,10 +2817,10 @@ def _apply_fov(ctr):
 
 
 # ================= WALKTHROUGH VIEWER =================
-def launch_walkthrough(rooms_px, doors_px, windows_px, px_per_m=None,
-                       room_configs=None, furnished=True, window_title=None,
-                       wall_pass=True):
-    """Build the furnished 3D model and run the first-person walkthrough."""
+def _launch_legacy_walkthrough(rooms_px, doors_px, windows_px, px_per_m=None,
+                               room_configs=None, furnished=True,
+                               window_title=None, wall_pass=True):
+    """Compatibility viewer used only if the modern PBR window is unavailable."""
     print("[WALK] Building 3D model from plan...")
     scene = build_scene(rooms_px, doors_px, windows_px, px_per_m=px_per_m,
                         room_configs=room_configs, furnished=furnished)
@@ -2664,7 +2854,7 @@ def launch_walkthrough(rooms_px, doors_px, windows_px, px_per_m=None,
 
     opt = vis.get_render_option()
     opt.background_color = np.array([0.70, 0.80, 0.90])   # soft daylight sky
-    opt.light_on = False
+    opt.light_on = True
     # Floors/ceilings must render from either side regardless of the drawing
     # direction of the room polygon.
     opt.mesh_show_back_face = True
@@ -2907,6 +3097,429 @@ def launch_walkthrough(rooms_px, doors_px, windows_px, px_per_m=None,
     vis.destroy_window()
 
 
+def _run_pbr_walkthrough(scene, window_title=None, wall_pass=True):
+    """Run a first-person, physically based walkthrough with visible controls."""
+    from open3d.visualization import gui, rendering
+
+    app = gui.Application.instance
+    try:
+        app.initialize()
+    except RuntimeError as exc:
+        if "initialized" not in str(exc).lower():
+            raise
+
+    title = (
+        window_title
+        or "AI 3D Interior Walkthrough - PBR materials and editable furniture"
+    )
+    window = app.create_window(title, 1400, 900)
+    scene_widget = gui.SceneWidget()
+    scene_widget.scene = rendering.Open3DScene(window.renderer)
+    scene_widget.scene.set_background(
+        np.array([0.72, 0.80, 0.88, 1.0], dtype=np.float32)
+    )
+    scene_widget.scene.set_lighting(
+        rendering.Open3DScene.LightingProfile.SOFT_SHADOWS,
+        np.array([0.35, -0.55, -0.76], dtype=np.float32),
+    )
+    scene_widget.scene.scene.enable_indirect_light(True)
+    scene_widget.scene.scene.set_indirect_light_intensity(32000.0)
+    scene_widget.scene.scene.set_sun_light(
+        np.array([-0.35, 0.45, -0.82], dtype=np.float32),
+        np.array([1.0, 0.94, 0.86], dtype=np.float32),
+        58000.0,
+    )
+    scene_widget.scene.scene.enable_sun_light(True)
+    scene_widget.scene.show_skybox(False)
+
+    geometry_names = {}
+    geometry_materials = {}
+    for index, mesh in enumerate(scene["meshes"]):
+        name = f"room_mesh_{index:04d}"
+        material = material_record_for_mesh(mesh)
+        scene_widget.scene.add_geometry(name, mesh, material, False)
+        geometry_names[id(mesh)] = name
+        geometry_materials[id(mesh)] = material
+
+    furniture_objects = scene.get("furniture_objects", [])
+    selection_name = "selected_furniture_outline"
+    selection_box = {"mesh": None}
+
+    def selected_label_text():
+        if not furniture_objects:
+            return "Furniture: no editable catalog object"
+        selected = furniture_objects[state["selected_furniture"]]
+        label = selected["asset_key"].replace("_", " ").title()
+        return (
+            f"Furniture: {label} "
+            f"({state['selected_furniture'] + 1}/{len(furniture_objects)})"
+        )
+
+    def make_selection_box():
+        if not furniture_objects:
+            return None
+        selected = furniture_objects[state["selected_furniture"]]
+        min_bound = np.min(
+            [np.asarray(mesh.get_min_bound()) for mesh in selected["meshes"]],
+            axis=0,
+        ) - 0.035
+        max_bound = np.max(
+            [np.asarray(mesh.get_max_bound()) for mesh in selected["meshes"]],
+            axis=0,
+        ) + 0.035
+        line = o3d.geometry.LineSet.create_from_axis_aligned_bounding_box(
+            o3d.geometry.AxisAlignedBoundingBox(min_bound, max_bound)
+        )
+        line.paint_uniform_color([1.0, 0.42, 0.05])
+        return line
+
+    spawn = np.array(scene["spawn"], dtype=float)
+    spawn_yaw = float(scene["spawn_yaw"])
+    state = dict(
+        pos=spawn.copy(),
+        yaw=spawn_yaw,
+        pitch=0.0,
+        wall_pass=bool(wall_pass),
+        selected_furniture=0,
+    )
+    allowed = prep(scene["allowed"])
+    minx, miny, maxx, maxy = scene["bounds"]
+    ghost_bounds = prep(shp_box(
+        minx - GHOST_MARGIN,
+        miny - GHOST_MARGIN,
+        maxx + GHOST_MARGIN,
+        maxy + GHOST_MARGIN,
+    ))
+
+    held = set()
+    mouse = dict(down=False, x=0.0, y=0.0)
+    last_tick = {"time": time.perf_counter()}
+
+    em = window.theme.font_size
+    panel = gui.Vert(
+        0.45 * em,
+        gui.Margins(0.75 * em, 0.65 * em, 0.75 * em, 0.75 * em),
+    )
+    panel.background_color = gui.Color(0.035, 0.045, 0.065, 0.91)
+    heading = gui.Label("AI 3D Interior")
+    instructions = gui.Label(
+        "WASD move  |  Shift run\n"
+        "Drag / arrows look  |  G pass walls\n"
+        "Tab select  |  [ ] rotate  |  Space photo"
+    )
+    status_label = gui.Label("")
+    selected_label = gui.Label("")
+    panel.add_child(heading)
+    panel.add_child(instructions)
+    panel.add_child(status_label)
+    panel.add_child(selected_label)
+
+    ghost_toggle = gui.ToggleSwitch("Walk through walls")
+    ghost_toggle.is_on = state["wall_pass"]
+    panel.add_child(ghost_toggle)
+
+    furniture_row = gui.Horiz(0.35 * em)
+    next_button = gui.Button("Next furniture")
+    left_button = gui.Button("Rotate left")
+    right_button = gui.Button("Rotate right")
+    furniture_row.add_child(next_button)
+    furniture_row.add_child(left_button)
+    furniture_row.add_child(right_button)
+    panel.add_child(furniture_row)
+
+    view_row = gui.Horiz(0.35 * em)
+    reset_button = gui.Button("Reset view")
+    snapshot_button = gui.Button("Save photo")
+    close_button = gui.Button("Close")
+    view_row.add_child(reset_button)
+    view_row.add_child(snapshot_button)
+    view_row.add_child(close_button)
+    panel.add_child(view_row)
+
+    def update_labels(message=None):
+        mode = "ON" if state["wall_pass"] else "OFF"
+        status_label.text = message or f"Walk through walls: {mode}"
+        selected_label.text = selected_label_text()
+
+    def apply_camera():
+        cp = math.cos(state["pitch"])
+        forward = np.array([
+            cp * math.cos(state["yaw"]),
+            cp * math.sin(state["yaw"]),
+            math.sin(state["pitch"]),
+        ])
+        eye = np.array([
+            state["pos"][0],
+            state["pos"][1],
+            EYE_HEIGHT,
+        ], dtype=np.float32)
+        center = (eye + forward).astype(np.float32)
+        scene_widget.scene.camera.look_at(
+            center, eye, np.array([0.0, 0.0, 1.0], dtype=np.float32)
+        )
+
+    def try_move(nx, ny):
+        position = state["pos"]
+        if state["wall_pass"]:
+            if ghost_bounds.contains(Point(nx, ny)):
+                state["pos"] = np.array([nx, ny])
+            return
+        if allowed.contains(Point(nx, ny)):
+            state["pos"] = np.array([nx, ny])
+        elif allowed.contains(Point(nx, position[1])):
+            state["pos"] = np.array([nx, position[1]])
+        elif allowed.contains(Point(position[0], ny)):
+            state["pos"] = np.array([position[0], ny])
+
+    line_material = rendering.MaterialRecord()
+    line_material.shader = "unlitLine"
+    line_material.base_color = [1.0, 0.42, 0.05, 1.0]
+    line_material.line_width = 3.0
+
+    def refresh_selection_box():
+        if scene_widget.scene.has_geometry(selection_name):
+            scene_widget.scene.remove_geometry(selection_name)
+        selection_box["mesh"] = make_selection_box()
+        if selection_box["mesh"] is not None:
+            scene_widget.scene.add_geometry(
+                selection_name, selection_box["mesh"], line_material, False
+            )
+        update_labels()
+
+    def select_next():
+        if furniture_objects:
+            state["selected_furniture"] = (
+                state["selected_furniture"] + 1
+            ) % len(furniture_objects)
+            refresh_selection_box()
+
+    def rotate_selected(delta):
+        if not furniture_objects:
+            return
+        selected = furniture_objects[state["selected_furniture"]]
+        rotate_furniture_object(selected, delta)
+        for mesh in selected["meshes"]:
+            name = geometry_names[id(mesh)]
+            scene_widget.scene.remove_geometry(name)
+            material = geometry_materials[id(mesh)]
+            scene_widget.scene.add_geometry(name, mesh, material, False)
+        refresh_selection_box()
+        label = selected["asset_key"].replace("_", " ").title()
+        update_labels(
+            f"{label}: {math.degrees(selected['yaw']) % 360:.0f} degrees"
+        )
+
+    def reset_view():
+        state["pos"] = spawn.copy()
+        state["yaw"] = spawn_yaw
+        state["pitch"] = 0.0
+        apply_camera()
+        update_labels("View reset")
+
+    def save_snapshot():
+        os.makedirs(CAPTURE_DIR, exist_ok=True)
+        filename = os.path.join(
+            CAPTURE_DIR, time.strftime("walk_pbr_%Y%m%d_%H%M%S.png")
+        )
+        update_labels("Saving high-quality photo...")
+
+        def write_image(image):
+            o3d.io.write_image(filename, image, 9)
+            update_labels(f"Saved: {os.path.basename(filename)}")
+            print(f"[WALK] PBR screenshot saved: {filename}")
+
+        scene_widget.scene.scene.render_to_image(write_image)
+
+    def set_ghost(enabled):
+        state["wall_pass"] = bool(enabled)
+        update_labels()
+
+    def on_key(event):
+        key = event.key
+        if event.type == gui.KeyEvent.Type.UP:
+            held.discard(key)
+            return gui.Widget.EventCallbackResult.HANDLED
+
+        held.add(key)
+        if key in (gui.KeyName.Q, gui.KeyName.ESCAPE):
+            window.close()
+        elif key == gui.KeyName.G:
+            ghost_toggle.is_on = not state["wall_pass"]
+            set_ghost(ghost_toggle.is_on)
+        elif key == gui.KeyName.TAB:
+            select_next()
+        elif key == gui.KeyName.LEFT_BRACKET:
+            rotate_selected(math.radians(15))
+        elif key == gui.KeyName.RIGHT_BRACKET:
+            rotate_selected(math.radians(-15))
+        elif key == gui.KeyName.R:
+            reset_view()
+        elif key == gui.KeyName.SPACE:
+            save_snapshot()
+        elif key == gui.KeyName.H:
+            panel.visible = not panel.visible
+        return gui.Widget.EventCallbackResult.HANDLED
+
+    def on_mouse(event):
+        if event.type == gui.MouseEvent.Type.BUTTON_DOWN:
+            mouse["down"] = event.is_button_down(gui.MouseButton.LEFT)
+            mouse["x"], mouse["y"] = event.x, event.y
+            if mouse["down"]:
+                return gui.Widget.EventCallbackResult.CONSUMED
+        elif event.type == gui.MouseEvent.Type.DRAG and mouse["down"]:
+            state["yaw"] -= (event.x - mouse["x"]) * MOUSE_SENS
+            state["pitch"] = max(
+                -1.2,
+                min(
+                    1.2,
+                    state["pitch"] - (event.y - mouse["y"]) * MOUSE_SENS,
+                ),
+            )
+            mouse["x"], mouse["y"] = event.x, event.y
+            apply_camera()
+            return gui.Widget.EventCallbackResult.CONSUMED
+        elif event.type == gui.MouseEvent.Type.BUTTON_UP:
+            mouse["down"] = False
+        return gui.Widget.EventCallbackResult.IGNORED
+
+    movement_keys = {
+        gui.KeyName.W,
+        gui.KeyName.A,
+        gui.KeyName.S,
+        gui.KeyName.D,
+        gui.KeyName.LEFT,
+        gui.KeyName.RIGHT,
+        gui.KeyName.UP,
+        gui.KeyName.DOWN,
+    }
+
+    def on_tick():
+        now = time.perf_counter()
+        dt = min(now - last_tick["time"], 0.05)
+        last_tick["time"] = now
+        active = bool(held.intersection(movement_keys))
+        yaw = state["yaw"]
+        forward = np.array([math.cos(yaw), math.sin(yaw)])
+        left = np.array([-forward[1], forward[0]])
+        running = (
+            gui.KeyName.LEFT_SHIFT in held
+            or gui.KeyName.RIGHT_SHIFT in held
+        )
+        step = WALK_SPEED * (RUN_MULT if running else 1.0) * dt
+        position = state["pos"]
+        if gui.KeyName.W in held:
+            try_move(
+                position[0] + forward[0] * step,
+                position[1] + forward[1] * step,
+            )
+        position = state["pos"]
+        if gui.KeyName.S in held:
+            try_move(
+                position[0] - forward[0] * step,
+                position[1] - forward[1] * step,
+            )
+        position = state["pos"]
+        if gui.KeyName.A in held:
+            try_move(
+                position[0] + left[0] * step,
+                position[1] + left[1] * step,
+            )
+        position = state["pos"]
+        if gui.KeyName.D in held:
+            try_move(
+                position[0] - left[0] * step,
+                position[1] - left[1] * step,
+            )
+        if gui.KeyName.LEFT in held:
+            state["yaw"] += TURN_SPEED * dt
+        if gui.KeyName.RIGHT in held:
+            state["yaw"] -= TURN_SPEED * dt
+        if gui.KeyName.UP in held:
+            state["pitch"] = min(
+                1.15, state["pitch"] + TURN_SPEED * 0.7 * dt
+            )
+        if gui.KeyName.DOWN in held:
+            state["pitch"] = max(
+                -1.15, state["pitch"] - TURN_SPEED * 0.7 * dt
+            )
+        if active:
+            apply_camera()
+        return active
+
+    def on_layout(_context):
+        rect = window.content_rect
+        scene_widget.frame = rect
+        panel.frame = gui.Rect(
+            rect.x + int(0.7 * em),
+            rect.y + int(0.7 * em),
+            int(35 * em),
+            int(12.5 * em),
+        )
+
+    ghost_toggle.set_on_clicked(set_ghost)
+    next_button.set_on_clicked(select_next)
+    left_button.set_on_clicked(lambda: rotate_selected(math.radians(15)))
+    right_button.set_on_clicked(lambda: rotate_selected(math.radians(-15)))
+    reset_button.set_on_clicked(reset_view)
+    snapshot_button.set_on_clicked(save_snapshot)
+    close_button.set_on_clicked(window.close)
+    scene_widget.set_on_key(on_key)
+    scene_widget.set_on_mouse(on_mouse)
+    window.set_on_tick_event(on_tick)
+    window.set_on_layout(on_layout)
+
+    window.add_child(scene_widget)
+    window.add_child(panel)
+    scene_widget.set_view_controls(gui.SceneWidget.Controls.FLY)
+    bounds = o3d.geometry.AxisAlignedBoundingBox()
+    for mesh in scene["meshes"]:
+        bounds += mesh.get_axis_aligned_bounding_box()
+    scene_widget.setup_camera(
+        CAMERA_FOV,
+        bounds,
+        np.array([state["pos"][0], state["pos"][1], EYE_HEIGHT]),
+    )
+    apply_camera()
+    refresh_selection_box()
+    update_labels()
+    print("[WALK] PBR walkthrough ready. Controls are shown inside the window.")
+    app.run()
+
+
+def launch_walkthrough(rooms_px, doors_px, windows_px, px_per_m=None,
+                       room_configs=None, furnished=True, window_title=None,
+                       wall_pass=True):
+    """Build the furnished design and open the high-quality PBR walkthrough."""
+    print("[WALK] Building textured 3D model from plan...")
+    scene = build_scene(
+        rooms_px,
+        doors_px,
+        windows_px,
+        px_per_m=px_per_m,
+        room_configs=room_configs,
+        furnished=furnished,
+    )
+    print(f"[WALK] PBR scene ready: {len(scene['meshes'])} meshes.")
+    try:
+        return _run_pbr_walkthrough(
+            scene,
+            window_title=window_title,
+            wall_pass=wall_pass,
+        )
+    except Exception as exc:
+        print(f"[WALK] PBR viewer unavailable ({exc}); opening compatibility view.")
+        return _launch_legacy_walkthrough(
+            rooms_px,
+            doors_px,
+            windows_px,
+            px_per_m=px_per_m,
+            room_configs=room_configs,
+            furnished=furnished,
+            window_title=window_title,
+            wall_pass=wall_pass,
+        )
+
+
 # ================= STANDALONE DEMO / VERIFICATION =================
 def _demo_plan():
     """Synthetic 3-room plan in plan pixels (100 px = 1 m).
@@ -2957,7 +3570,7 @@ def _capture_verification(out_dir):
             vis.add_geometry(m)
     opt = vis.get_render_option()
     opt.background_color = np.array([0.62, 0.72, 0.82])
-    opt.light_on = False
+    opt.light_on = True
     opt.mesh_show_back_face = True
     ctr = vis.get_view_control()
 
@@ -2993,12 +3606,133 @@ def _capture_verification(out_dir):
     print(f"[CAPTURE] walkable_area={scene['allowed'].area:.2f} m^2")
 
 
+def _capture_pbr_verification(out_dir):
+    """Render the demo apartment through the same PBR path as the walkthrough."""
+    from open3d.visualization import gui, rendering
+
+    living, bedroom, kitchen, doors, windows, configs = _demo_plan()
+    scene = build_scene(
+        [living, bedroom, kitchen],
+        doors,
+        windows,
+        px_per_m=100,
+        room_configs=configs,
+    )
+    os.makedirs(out_dir, exist_ok=True)
+
+    shots = [
+        ("living_from_door", (3.6, -4.4, EYE_HEIGHT), math.radians(160), -0.05),
+        ("living_sofa_view", (4.7, -2.0, EYE_HEIGHT), math.radians(205), -0.10),
+        ("bedroom", (9.1, -2.0, EYE_HEIGHT), math.radians(-90), -0.08),
+        ("kitchen", (2.0, -7.9, EYE_HEIGHT), math.radians(15), -0.05),
+        (
+            "doorway_living_to_bedroom",
+            (5.2, -3.3, EYE_HEIGHT),
+            math.radians(10),
+            0.0,
+        ),
+        ("overview", (3.5, -12.5, 11.0), math.radians(75), -0.90),
+    ]
+
+    app = gui.Application.instance
+    app.initialize()
+    window = app.create_window("PBR walkthrough verification", 1280, 800)
+    widget = gui.SceneWidget()
+    widget.scene = rendering.Open3DScene(window.renderer)
+    widget.scene.set_background(
+        np.array([0.72, 0.80, 0.88, 1.0], dtype=np.float32)
+    )
+    widget.scene.set_lighting(
+        rendering.Open3DScene.LightingProfile.SOFT_SHADOWS,
+        np.array([0.35, -0.55, -0.76], dtype=np.float32),
+    )
+    widget.scene.scene.enable_indirect_light(True)
+    widget.scene.scene.set_indirect_light_intensity(32000.0)
+    widget.scene.scene.set_sun_light(
+        np.array([-0.35, 0.45, -0.82], dtype=np.float32),
+        np.array([1.0, 0.94, 0.86], dtype=np.float32),
+        58000.0,
+    )
+    widget.scene.scene.enable_sun_light(True)
+    for index, mesh in enumerate(scene["meshes"]):
+        widget.scene.add_geometry(
+            f"room_mesh_{index:04d}",
+            mesh,
+            material_record_for_mesh(mesh),
+            False,
+        )
+
+    bounds = o3d.geometry.AxisAlignedBoundingBox()
+    for mesh in scene["meshes"]:
+        bounds += mesh.get_axis_aligned_bounding_box()
+    widget.setup_camera(60.0, bounds, bounds.get_center())
+
+    def set_shot_camera(index):
+        _name, eye_values, yaw, pitch = shots[index]
+        eye = np.asarray(eye_values, dtype=np.float32)
+        cp = math.cos(pitch)
+        forward = np.asarray(
+            [
+                cp * math.cos(yaw),
+                cp * math.sin(yaw),
+                math.sin(pitch),
+            ],
+            dtype=np.float32,
+        )
+        widget.scene.camera.look_at(
+            eye + forward,
+            eye,
+            np.array([0.0, 0.0, 1.0], dtype=np.float32),
+        )
+
+    state = {"index": 0, "pending": False, "warmup": 0}
+
+    def finish_capture(image):
+        name = shots[state["index"]][0]
+        path = os.path.join(out_dir, f"{name}.png")
+        o3d.io.write_image(path, image, 9)
+        print(f"[PBR CAPTURE] {path}")
+
+        def advance():
+            state["index"] += 1
+            state["pending"] = False
+            state["warmup"] = 0
+            if state["index"] >= len(shots):
+                window.close()
+            else:
+                set_shot_camera(state["index"])
+                window.post_redraw()
+
+        app.post_to_main_thread(window, advance)
+
+    def on_tick():
+        if state["pending"]:
+            return False
+        state["warmup"] += 1
+        if state["warmup"] >= 3:
+            state["pending"] = True
+            widget.scene.scene.render_to_image(finish_capture)
+        return True
+
+    def on_layout(_context):
+        widget.frame = window.content_rect
+
+    window.add_child(widget)
+    window.set_on_layout(on_layout)
+    window.set_on_tick_event(on_tick)
+    set_shot_camera(0)
+    app.run()
+
+    print(f"[PBR CAPTURE] meshes={len(scene['meshes'])}")
+    print(f"[PBR CAPTURE] walkable_area={scene['allowed'].area:.2f} m^2")
+
+
 if __name__ == "__main__":
     import sys
     if "--capture" in sys.argv:
         i = sys.argv.index("--capture")
         out = sys.argv[i + 1] if len(sys.argv) > i + 1 else "walk_captures"
-        _capture_verification(out)
+        _capture_pbr_verification(out)
     else:
         living, bedroom, kitchen, doors, windows, configs = _demo_plan()
         launch_walkthrough([living, bedroom, kitchen], doors, windows,
