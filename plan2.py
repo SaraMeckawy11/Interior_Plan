@@ -1420,9 +1420,10 @@ def open_walkthrough_dialog():
     tk.Label(
         engine_card,
         text=(tripo_reason + " The app chooses focal walls, aligns a complete "
-              "furniture composition, protects doors and circulation, and loads "
-              "every primary item as walk-around 3D geometry. Your style, color, "
-              "floor, walls and brief coordinate the whole apartment."),
+              "furniture composition, and keeps paired groups centered and "
+              "square to the architecture. Doors stay clear and every primary "
+              "item loads as walk-around 3D geometry. Your style, color, floor, "
+              "walls and brief coordinate the whole apartment."),
         font=("Segoe UI", 9), bg=SURFACE,
         fg=SUCCESS_COLOR if tripo_ready else TEXT_MUTED,
         wraplength=600, justify=tk.LEFT,
@@ -1431,7 +1432,7 @@ def open_walkthrough_dialog():
 
     def launch(only_room=None):
         configs, rooms = [], []
-        variation = "designer-staging-v4"
+        variation = "preference-render-v3"
         use_triposr = engine_var.get().startswith("Local AI 3D")
         for name, tvar, svar in room_vars:
             if only_room and name != only_room:

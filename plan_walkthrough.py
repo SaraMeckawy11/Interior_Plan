@@ -1527,7 +1527,6 @@ class RoomFurnisher:
         self.meshes = []
         self.placed = []          # blocking footprints (shapely)
         self.door_zones = []      # keep-clear zones in front of doors
-        self.circulation_zones = []  # paths from each door into the room
         for e in edges:
             p1, p2 = np.array(e["p1"]), np.array(e["p2"])
             for typ, t0, t1 in e.get("openings", []):
@@ -1535,13 +1534,6 @@ class RoomFurnisher:
                     continue
                 c = p1 + (p2 - p1) * ((t0 + t1) / 2)
                 self.door_zones.append(Point(c[0], c[1]).buffer(0.95))
-                toward_room = self.centroid - c
-                distance = np.linalg.norm(toward_room)
-                if distance > 0.35:
-                    end = c + toward_room / distance * min(1.65, distance * 0.78)
-                    self.circulation_zones.append(
-                        LineString([c, end]).buffer(0.42, cap_style=2)
-                    )
 
     @property
     def layered(self):
@@ -1642,12 +1634,118 @@ class RoomFurnisher:
         slots.sort(key=lambda s: -s["len"])
         return slots
 
+    def _centered_wall_pose(self, slot, width, depth):
+        """Return the game-style snapped pose for an item on a wall slot."""
+        n = slot["n"]
+        pos = slot["mid"] + n * (WALL_GAP + depth / 2)
+        return pos, yaw_facing(n)
+
+    def _candidate_clear(self, fp):
+        """Check a proposed template footprint without changing scene state."""
+        return (
+            fp.within(self.inset)
+            and not any(fp.intersects(zone) for zone in self.door_zones)
+        )
+
+    def living_anchor_slots(self):
+        """Rank centered sofa walls by the quality of the complete composition."""
+        slots = self.wall_slots()
+
+        def score(slot):
+            sofa_pos, sofa_yaw = self._centered_wall_pose(slot, 2.2, 0.95)
+            sofa_fp = footprint_poly(sofa_pos, sofa_yaw, 2.2, 0.95)
+            if slot["len"] < 2.3 or not self._candidate_clear(sofa_fp):
+                return -1e6
+
+            n, side = slot["n"], slot["dir"]
+            score_value = min(slot["len"], 4.5)
+            if not slot["edge"].get("openings"):
+                score_value += 2.5
+
+            table_pos = sofa_pos + n * 1.5
+            table_fp = footprint_poly(table_pos, sofa_yaw, 1.1, 0.6)
+            if self._candidate_clear(table_fp):
+                score_value += 3.0
+            else:
+                score_value -= 6.0
+
+            chair_clear = 0
+            for direction in (-1, 1):
+                chair_pos = table_pos + side * direction * 1.6
+                facing = table_pos - chair_pos
+                facing /= np.linalg.norm(facing) + 1e-9
+                chair_fp = footprint_poly(
+                    chair_pos, yaw_facing(facing), 0.92, 0.85
+                )
+                if self._candidate_clear(chair_fp):
+                    chair_clear += 1
+            score_value += chair_clear * 1.6
+
+            has_opposing_media_wall = any(
+                other["len"] >= 1.35
+                and np.dot(other["n"], n) < -0.6
+                for other in slots
+            )
+            if has_opposing_media_wall:
+                score_value += 3.0
+            return score_value
+
+        return sorted(slots, key=score, reverse=True)
+
+    def bedroom_anchor_slots(self):
+        """Rank centered bed walls as a balanced bed/nightstand composition."""
+        slots = self.wall_slots()
+
+        def score(slot):
+            bed_pos, bed_yaw = self._centered_wall_pose(slot, 1.8, 2.15)
+            bed_fp = footprint_poly(bed_pos, bed_yaw, 1.8, 2.15)
+            if slot["len"] < 1.9 or not self._candidate_clear(bed_fp):
+                return -1e6
+
+            n, side = slot["n"], slot["dir"]
+            score_value = min(slot["len"], 4.2)
+            if not slot["edge"].get("openings"):
+                score_value += 3.0
+
+            wall_anchor = bed_pos - n * (2.15 / 2 + WALL_GAP)
+            nightstand_fps = []
+            for direction in (-1, 1):
+                ns_pos = (
+                    wall_anchor + side * direction * (1.8 / 2 + 0.30)
+                    + n * (WALL_GAP + 0.42 / 2)
+                )
+                ns_fp = footprint_poly(ns_pos, bed_yaw, 0.48, 0.42)
+                if self._candidate_clear(ns_fp):
+                    score_value += 2.0
+                    nightstand_fps.append(ns_fp)
+
+            for other in slots:
+                if other["edge"] is slot["edge"] or other["len"] < 1.45:
+                    continue
+                wardrobe_w = 1.8 if other["len"] >= 2.0 else 1.35
+                wardrobe_pos, wardrobe_yaw = self._centered_wall_pose(
+                    other, wardrobe_w, 0.62
+                )
+                wardrobe_fp = footprint_poly(
+                    wardrobe_pos, wardrobe_yaw, wardrobe_w, 0.62
+                )
+                if (
+                    self._candidate_clear(wardrobe_fp)
+                    and not wardrobe_fp.intersects(bed_fp)
+                    and not any(
+                        wardrobe_fp.intersects(fp) for fp in nightstand_fps
+                    )
+                ):
+                    score_value += 2.5
+                    break
+            return score_value
+
+        return sorted(slots, key=score, reverse=True)
+
     def _ok(self, fp, block=True, avoid_doors=True):
         if not fp.within(self.inset):
             return False
         if avoid_doors and any(fp.intersects(z) for z in self.door_zones):
-            return False
-        if avoid_doors and any(fp.intersects(z) for z in self.circulation_zones):
             return False
         if block and any(fp.intersects(p) for p in self.placed):
             return False
@@ -1661,12 +1759,12 @@ class RoomFurnisher:
             return False
         self.meshes.extend(place_meshes(meshes, pos, yaw))
         if block:
-            self.placed.append(fp.buffer(0.08))
+            self.placed.append(fp.buffer(0.04))
         return True
 
     def against_wall(self, builder, slots=None, min_side=0.0, prefer=None,
                      block=True, avoid_doors=True, **kw):
-        """Place an item on the best usable part of a free wall run."""
+        """Snap an item squarely to the center of the best free wall run."""
         slots = slots if slots is not None else self.wall_slots()
         if prefer:
             slots = sorted(slots, key=prefer)
@@ -1676,22 +1774,12 @@ class RoomFurnisher:
             if s["len"] < max(w + 0.1, min_side):
                 continue
             n = s["n"]
+            pos = s["mid"] + n * (WALL_GAP + d / 2)
             yaw = yaw_facing(n)
-            travel = max(0.0, (s["len"] - w) / 2 - 0.06)
-            shifts = [0.0]
-            if travel > 0.08:
-                shifts.extend((travel * 0.62, -travel * 0.62, travel, -travel))
-            for shift in shifts:
-                pos = (
-                    s["mid"] + s["dir"] * shift
-                    + n * (WALL_GAP + d / 2)
+            if self.add(built, pos, yaw, block=block, avoid_doors=avoid_doors):
+                return dict(
+                    slot=s, pos=pos, yaw=yaw, n=n, s=s["dir"], w=w, d=d
                 )
-                if self.add(
-                    built, pos, yaw, block=block, avoid_doors=avoid_doors
-                ):
-                    return dict(
-                        slot=s, pos=pos, yaw=yaw, n=n, s=s["dir"], w=w, d=d
-                    )
         return None
 
     def in_corner(self, builder, **kw):
@@ -1738,30 +1826,31 @@ class RoomFurnisher:
         chair_builder = self.furniture_builder("armchair", build_armchair)
         table_builder = self.furniture_builder("coffee_table", build_coffee_table)
         tv_builder = self.furniture_builder("tv_unit", build_tv_unit)
-        sofa = (self.against_wall(sofa_builder) or
-                self.against_wall(sofa_builder, w=1.7, d=0.9))
+        anchor_slots = self.living_anchor_slots()
+        sofa = (
+            self.against_wall(sofa_builder, slots=anchor_slots)
+            or self.against_wall(
+                sofa_builder, slots=anchor_slots, w=1.7, d=0.9
+            )
+        )
         if sofa:
             n, s = sofa["n"], sofa["s"]
-            table_distance = sofa["d"] / 2 + 0.44 + 0.30
-            rug_pos = np.array(sofa["pos"]) + n * 1.35
+            rug_pos = np.array(sofa["pos"]) + n * 1.55
             rug = build_rug(self.P)
             if (self.wants_rugs and
                     footprint_poly(rug_pos, sofa["yaw"], rug[1], rug[2]).within(self.inset)):
                 self.add(rug, rug_pos, sofa["yaw"], block=False,
                          avoid_doors=False, check=False)
             self.add(table_builder(self.P),
-                     np.array(sofa["pos"]) + n * table_distance, sofa["yaw"])
+                     np.array(sofa["pos"]) + n * 1.5, sofa["yaw"])
             # armchair beside the rug, angled toward the table. The seeded
             # side choice gives each generated variation a fresh composition.
             chair_sides = [-1, 1]
             self.rng.shuffle(chair_sides)
             if not self.airy:
                 for side in chair_sides:
-                    conversation_center = (
-                        np.array(sofa["pos"]) + n * table_distance
-                    )
-                    ch_pos = conversation_center + s * side * 1.42
-                    f = conversation_center - ch_pos
+                    ch_pos = np.array(sofa["pos"]) + n * 1.5 + s * side * 1.6
+                    f = (np.array(sofa["pos"]) + n * 1.5) - ch_pos
                     f = f / (np.linalg.norm(f) + 1e-9)
                     if self.add(chair_builder(self.P), ch_pos, yaw_facing(f)):
                         break
@@ -1780,21 +1869,9 @@ class RoomFurnisher:
             if "no tv" not in self.brief and "without tv" not in self.brief:
                 tv = self.against_wall(tv_builder, slots=tv_slots)
                 if not tv:
-                    tv = self.against_wall(
-                        tv_builder, slots=tv_slots, w=1.25
-                    )
-                if not tv:
-                    side_slots = [
-                        sl for sl in self.wall_slots()
-                        if np.dot(sl["n"], n) < 0.35
-                    ]
-                    self.against_wall(
-                        tv_builder, slots=side_slots, w=1.25
-                    )
+                    self.against_wall(tv_builder, slots=tv_slots, w=1.25)
             if self.layered:
-                ottoman_pos = (
-                    np.array(sofa["pos"]) + n * table_distance - s * 1.25
-                )
+                ottoman_pos = np.array(sofa["pos"]) + n * 1.48 - s * 1.35
                 self.add(build_ottoman(self.P), ottoman_pos, sofa["yaw"])
         if self.wants_plants:
             self.in_corner(build_plant)
@@ -1808,14 +1885,19 @@ class RoomFurnisher:
         bed_builder = self.furniture_builder("bed", build_bed)
         nightstand_builder = self.furniture_builder("nightstand", build_nightstand)
         wardrobe_builder = self.furniture_builder("wardrobe", build_wardrobe)
-        bed = (self.against_wall(bed_builder) or
-               self.against_wall(bed_builder, w=1.5, d=2.0))
+        anchor_slots = self.bedroom_anchor_slots()
+        bed = (
+            self.against_wall(bed_builder, slots=anchor_slots)
+            or self.against_wall(
+                bed_builder, slots=anchor_slots, w=1.5, d=2.0
+            )
+        )
         if bed:
             n, s, yaw = bed["n"], bed["s"], bed["yaw"]
             anchor = np.array(bed["pos"]) - n * (bed["d"] / 2 + WALL_GAP)
             for side in (-1, 1):
                 ns = nightstand_builder(self.P)
-                ns_pos = (anchor + s * side * (bed["w"] / 2 + 0.38)
+                ns_pos = (anchor + s * side * (bed["w"] / 2 + 0.30)
                           + n * (WALL_GAP + ns[2] / 2))
                 self.add(ns, ns_pos, yaw)
             rug_pos = np.array(bed["pos"]) + n * (bed["d"] / 2 - 0.4)
