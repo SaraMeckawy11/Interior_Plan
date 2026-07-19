@@ -463,6 +463,20 @@ def place_meshes(meshes, pos, yaw):
     return meshes
 
 
+def rotate_furniture_object(furniture, delta):
+    """Rotate one editable component group around its stable floor pivot."""
+    center = (
+        float(furniture["position"][0]),
+        float(furniture["position"][1]),
+        0.0,
+    )
+    rotation = _rotz(delta)
+    for mesh in furniture["meshes"]:
+        mesh.rotate(rotation, center=center)
+    furniture["yaw"] += delta
+    return furniture
+
+
 def footprint_poly(pos, yaw, w, d):
     fp = shp_box(-w / 2, -d / 2, w / 2, d / 2)
     fp = affinity.rotate(fp, yaw, origin=(0, 0), use_radians=True)
@@ -1409,7 +1423,7 @@ def build_room_design_surfaces(room_m, edges, P, config):
 
 
 # ================= FURNISHING ENGINE =================
-TRIPOSR_FURNITURE_ASSETS = {
+EDITABLE_FURNITURE_ASSETS = {
     "sofa",
     "armchair",
     "coffee_table",
@@ -1453,8 +1467,8 @@ def _tripo_material_color(asset_key, palette):
     return palette["table"]
 
 
-def _tripo_accessories(asset_key, procedural_meshes):
-    """Keep functional styling that is separate from the generated furniture."""
+def _furniture_accessories(asset_key, procedural_meshes):
+    """Keep functional styling that is separate from the catalog furniture."""
     if asset_key == "coffee_table":
         return procedural_meshes[-1:]
     if asset_key == "tv_unit":
@@ -1526,6 +1540,8 @@ class RoomFurnisher:
         self.centroid = np.array([self.poly.centroid.x, self.poly.centroid.y])
         self.meshes = []
         self.placed = []          # blocking footprints (shapely)
+        self.editable_objects = []
+        self._editable_mesh_assets = {}
         self.door_zones = []      # keep-clear zones in front of doors
         for e in edges:
             p1, p2 = np.array(e["p1"]), np.array(e["p2"])
@@ -1552,45 +1568,58 @@ class RoomFurnisher:
         return "no rug" not in self.brief
 
     def furniture_builder(self, asset_key, procedural_builder):
-        """Use volumetric Tripo geometry, recolored as a true room material."""
-        if (not self.config.get("use_triposr", False)
-                or asset_key not in TRIPOSR_FURNITURE_ASSETS):
+        """Load a native catalog model, with Tripo kept for compatibility."""
+        use_catalog = self.config.get("use_catalog", False)
+        use_triposr = self.config.get("use_triposr", False)
+        if (
+            asset_key not in EDITABLE_FURNITURE_ASSETS
+            or (not use_catalog and not use_triposr)
+        ):
             return procedural_builder
 
-        def build_with_triposr(P, **kw):
+        def build_with_local_asset(P, **kw):
             procedural = procedural_builder(P, **kw)
             procedural_meshes, width, depth = procedural
             try:
-                from local_3d_ai import load_asset_mesh, preference_key
-
-                # The island footprint includes its stools; the reconstructed
-                # island itself must retain a realistic cabinet depth.
                 mesh_depth = min(depth, 0.90) if asset_key == "kitchen_island" else depth
-                generated = load_asset_mesh(
-                    asset_key,
-                    self.config.get("style", "Modern"),
-                    width,
-                    mesh_depth,
-                    design_key=preference_key(self.config),
-                )
-                if generated:
-                    # TripoSR derives dense vertex colors from a single product
-                    # image. Keeping them makes the mesh look like that photo
-                    # was pasted onto the object. Discard the projection and
-                    # apply a coherent material with smooth lighting derived
-                    # from the mesh's real surface normals.
-                    material = _tripo_material_color(asset_key, P)
-                    for mesh in generated:
-                        _apply_smooth_material(mesh, material)
-                    generated.extend(
-                        _tripo_accessories(asset_key, procedural_meshes)
+                if use_catalog:
+                    from furniture_catalog import load_catalog_asset
+
+                    generated = load_catalog_asset(
+                        asset_key,
+                        self.config.get("style", "Modern"),
+                        width,
+                        mesh_depth,
+                        palette=P,
                     )
+                else:
+                    from local_3d_ai import load_asset_mesh, preference_key
+
+                    generated = load_asset_mesh(
+                        asset_key,
+                        self.config.get("style", "Modern"),
+                        width,
+                        mesh_depth,
+                        design_key=preference_key(self.config),
+                    )
+                if generated:
+                    if use_triposr:
+                        material = _tripo_material_color(asset_key, P)
+                        for mesh in generated:
+                            _apply_smooth_material(mesh, material)
+                    generated.extend(
+                        _furniture_accessories(asset_key, procedural_meshes)
+                    )
+                    if use_catalog:
+                        for mesh in generated:
+                            self._editable_mesh_assets[id(mesh)] = asset_key
                     return generated, width, depth
             except Exception as exc:
-                print(f"[WALK] TripoSR asset '{asset_key}' unavailable: {exc}")
+                engine = "catalog" if use_catalog else "TripoSR"
+                print(f"[WALK] {engine} asset '{asset_key}' unavailable: {exc}")
             return procedural
 
-        return build_with_triposr
+        return build_with_local_asset
 
     # ---- geometry helpers ----
     def _inward_normal(self, p1, p2):
@@ -1758,6 +1787,25 @@ class RoomFurnisher:
         if check and not self._ok(fp, block=block, avoid_doors=avoid_doors):
             return False
         self.meshes.extend(place_meshes(meshes, pos, yaw))
+        asset_key = next(
+            (
+                self._editable_mesh_assets[id(mesh)]
+                for mesh in meshes
+                if id(mesh) in self._editable_mesh_assets
+            ),
+            None,
+        )
+        if asset_key:
+            self.editable_objects.append(
+                dict(
+                    asset_key=asset_key,
+                    meshes=list(meshes),
+                    position=np.array([pos[0], pos[1]], dtype=float),
+                    yaw=float(yaw),
+                    width=float(w),
+                    depth=float(d),
+                )
+            )
         if block:
             self.placed.append(fp.buffer(0.04))
         return True
@@ -2107,6 +2155,7 @@ def build_scene(rooms_px, doors_px, windows_px, px_per_m=None, room_configs=None
 
     meshes = []
     furniture_fps = []
+    furniture_objects = []
     room_polys = []
 
     for i, room in enumerate(rooms_m):
@@ -2137,9 +2186,11 @@ def build_scene(rooms_px, doors_px, windows_px, px_per_m=None, room_configs=None
             cfg = dict(cfg)
             cfg.setdefault("room_type", rtype)
             cfg.setdefault("style", style)
-            fm, fps = RoomFurnisher(room, all_edges[i], P, cfg).furnish(rtype)
+            furnisher = RoomFurnisher(room, all_edges[i], P, cfg)
+            fm, fps = furnisher.furnish(rtype)
             meshes.extend(fm)
             furniture_fps.extend(fps)
+            furniture_objects.extend(furnisher.editable_objects)
 
     # ---- building cap: hull ceiling + under-floor slab so hairline seams
     # between rooms show as dark shadow lines, never open sky ----
@@ -2219,11 +2270,26 @@ def build_scene(rooms_px, doors_px, windows_px, px_per_m=None, room_configs=None
     # Bake soft directional lighting into every opaque mesh (glass / sky /
     # light-spill are auto-skipped) so the whole scene reads as lit interior
     # design instead of flat colour.
-    meshes = [bake_lighting(m) for m in meshes if m is not None]
+    editable_mesh_ids = {
+        id(mesh)
+        for furniture in furniture_objects
+        for mesh in furniture["meshes"]
+    }
+    meshes = [
+        mesh if id(mesh) in editable_mesh_ids else bake_lighting(mesh)
+        for mesh in meshes
+        if mesh is not None
+    ]
 
     bounds = unary_union(room_polys).bounds
-    return dict(meshes=meshes, allowed=allowed, spawn=spawn,
-                spawn_yaw=spawn_yaw, bounds=bounds)
+    return dict(
+        meshes=meshes,
+        allowed=allowed,
+        spawn=spawn,
+        spawn_yaw=spawn_yaw,
+        bounds=bounds,
+        furniture_objects=furniture_objects,
+    )
 
 
 # ================= CAMERA =================
@@ -2277,6 +2343,24 @@ def launch_walkthrough(rooms_px, doors_px, windows_px, px_per_m=None,
         if m is not None:
             vis.add_geometry(m)
 
+    furniture_objects = scene.get("furniture_objects", [])
+    selection_box = None
+    if furniture_objects:
+        first = furniture_objects[0]
+        min_bound = np.min(
+            [np.asarray(mesh.get_min_bound()) for mesh in first["meshes"]],
+            axis=0,
+        ) - 0.035
+        max_bound = np.max(
+            [np.asarray(mesh.get_max_bound()) for mesh in first["meshes"]],
+            axis=0,
+        ) + 0.035
+        selection_box = o3d.geometry.LineSet.create_from_axis_aligned_bounding_box(
+            o3d.geometry.AxisAlignedBoundingBox(min_bound, max_bound)
+        )
+        selection_box.paint_uniform_color([1.0, 0.42, 0.05])
+        vis.add_geometry(selection_box)
+
     opt = vis.get_render_option()
     opt.background_color = np.array([0.70, 0.80, 0.90])   # soft daylight sky
     opt.light_on = False
@@ -2292,7 +2376,7 @@ def launch_walkthrough(rooms_px, doors_px, windows_px, px_per_m=None,
     spawn_yaw = float(scene["spawn_yaw"])
     state = dict(pos=spawn.copy(), yaw=spawn_yaw, pitch=0.0,
                  running=True, shot=False, wall_pass=bool(wall_pass),
-                 show_help=True)
+                 show_help=True, selected_furniture=0)
     held = set()
 
     GLFW_RIGHT, GLFW_LEFT, GLFW_DOWN, GLFW_UP = 262, 263, 264, 265
@@ -2336,12 +2420,68 @@ def launch_walkthrough(rooms_px, doors_px, windows_px, px_per_m=None,
         print_controls()
         return False
 
+    def refresh_selection_box():
+        if selection_box is None or not furniture_objects:
+            return
+        selected = furniture_objects[state["selected_furniture"]]
+        min_bound = np.min(
+            [np.asarray(mesh.get_min_bound()) for mesh in selected["meshes"]],
+            axis=0,
+        ) - 0.035
+        max_bound = np.max(
+            [np.asarray(mesh.get_max_bound()) for mesh in selected["meshes"]],
+            axis=0,
+        ) + 0.035
+        updated = o3d.geometry.LineSet.create_from_axis_aligned_bounding_box(
+            o3d.geometry.AxisAlignedBoundingBox(min_bound, max_bound)
+        )
+        selection_box.points = updated.points
+        selection_box.lines = updated.lines
+        selection_box.paint_uniform_color([1.0, 0.42, 0.05])
+        vis.update_geometry(selection_box)
+
+    def select_furniture_cb(_vis):
+        if not furniture_objects:
+            print("[WALK] No editable catalog furniture in this scene.")
+            return False
+        state["selected_furniture"] = (
+            state["selected_furniture"] + 1
+        ) % len(furniture_objects)
+        selected = furniture_objects[state["selected_furniture"]]
+        refresh_selection_box()
+        label = selected["asset_key"].replace("_", " ").title()
+        print(
+            f"[WALK] Selected {label} "
+            f"({state['selected_furniture'] + 1}/{len(furniture_objects)})"
+        )
+        return False
+
+    def rotate_furniture(delta):
+        def callback(_vis):
+            if not furniture_objects:
+                return False
+            selected = furniture_objects[state["selected_furniture"]]
+            rotate_furniture_object(selected, delta)
+            for mesh in selected["meshes"]:
+                vis.update_geometry(mesh)
+            refresh_selection_box()
+            label = selected["asset_key"].replace("_", " ").title()
+            print(
+                f"[WALK] Rotated {label} to "
+                f"{math.degrees(selected['yaw']) % 360:.0f} degrees"
+            )
+            return False
+        return callback
+
     vis.register_key_callback(ord("Q"), quit_cb)
     vis.register_key_callback(27, quit_cb)          # ESC
     vis.register_key_callback(32, shot_cb)          # SPACE
     vis.register_key_callback(ord("R"), reset_cb)   # reset view
     vis.register_key_callback(ord("G"), ghost_cb)   # pass through walls
     vis.register_key_callback(ord("H"), help_cb)    # repeat help
+    vis.register_key_callback(258, select_furniture_cb)  # TAB
+    vis.register_key_callback(ord("["), rotate_furniture(math.radians(15)))
+    vis.register_key_callback(ord("]"), rotate_furniture(math.radians(-15)))
 
     # ---- mouse-look: hold left button and drag to turn/look ----
     mouse = dict(down=False, x=0.0, y=0.0)
@@ -2391,12 +2531,20 @@ def launch_walkthrough(rooms_px, doors_px, windows_px, px_per_m=None,
         print("  Arrow keys   look around")
         print("  Shift        move faster")
         print("  G            toggle Ghost mode (walk through walls)")
+        print("  TAB          select the next real 3D furniture component")
+        print("  [ / ]        rotate selected furniture by 15 degrees")
         print("  R            return to the starting view")
         print("  SPACE        save a design snapshot")
         print("  H            show these controls again")
         print("  Q / ESC      return to the floor-plan studio")
         initial = "ON — walls are passable" if state["wall_pass"] else "OFF — doorways only"
         print(f"  Ghost mode   {initial}")
+        if furniture_objects:
+            selected = furniture_objects[state["selected_furniture"]]
+            print(
+                "  Selected     "
+                + selected["asset_key"].replace("_", " ").title()
+            )
         print("=" * 64 + "\n")
 
     print_controls()

@@ -1401,13 +1401,13 @@ def open_walkthrough_dialog():
                            highlightthickness=1)
     engine_card.pack(fill=tk.X, pady=(8, 0))
     try:
-        import local_3d_ai
-        tripo_ready, tripo_reason = local_3d_ai.runtime_status()
+        import furniture_catalog
+        catalog_ready, catalog_reason = furniture_catalog.catalog_status()
     except Exception as exc:
-        tripo_ready, tripo_reason = False, f"TripoSR is unavailable: {exc}"
+        catalog_ready, catalog_reason = False, f"3D catalog is unavailable: {exc}"
     engine_values = []
-    if tripo_ready:
-        engine_values.append("Local AI 3D - full designer furniture")
+    if catalog_ready:
+        engine_values.append("Local 3D catalog - real editable furniture")
     engine_values.append("Procedural - instant fallback")
     engine_var = tk.StringVar(value=engine_values[0])
     tk.Label(engine_card, text="AUTOMATIC DESIGNER STAGING", font=("Segoe UI", 8, "bold"),
@@ -1419,13 +1419,12 @@ def open_walkthrough_dialog():
     ).grid(row=1, column=0, sticky="w", padx=10, pady=(0, 4))
     tk.Label(
         engine_card,
-        text=(tripo_reason + " The app chooses focal walls, aligns a complete "
-              "furniture composition, and keeps paired groups centered and "
-              "square to the architecture. Doors stay clear and every primary "
-              "item loads as walk-around 3D geometry. Your style, color, floor, "
-              "walls and brief coordinate the whole apartment."),
+        text=(catalog_reason + " These are native game-model components, not "
+              "image reconstructions. The app stages the complete composition "
+              "automatically; in the walkthrough use TAB to select furniture "
+              "and [ or ] to rotate its direction."),
         font=("Segoe UI", 9), bg=SURFACE,
-        fg=SUCCESS_COLOR if tripo_ready else TEXT_MUTED,
+        fg=SUCCESS_COLOR if catalog_ready else TEXT_MUTED,
         wraplength=600, justify=tk.LEFT,
     ).grid(row=2, column=0, sticky="w", padx=10, pady=(0, 9))
     engine_card.grid_columnconfigure(0, weight=1)
@@ -1433,7 +1432,7 @@ def open_walkthrough_dialog():
     def launch(only_room=None):
         configs, rooms = [], []
         variation = "preference-render-v3"
-        use_triposr = engine_var.get().startswith("Local AI 3D")
+        use_catalog = engine_var.get().startswith("Local 3D catalog")
         for name, tvar, svar in room_vars:
             if only_room and name != only_room:
                 continue
@@ -1446,7 +1445,8 @@ def open_walkthrough_dialog():
                                 wall_finish=wall_var.get(),
                                 design_seed=variation,
                                 whole_room_design=True,
-                                use_triposr=use_triposr))
+                                use_catalog=use_catalog,
+                                use_triposr=False))
         dlg.withdraw()
         loading = tk.Toplevel(root)
         loading.title("Building 3D interior")
@@ -1470,23 +1470,8 @@ def open_walkthrough_dialog():
                 loading.update()
 
         try:
-            if use_triposr:
-                update_loading("Preparing local TripoSR furniture meshes...")
-                try:
-                    import local_3d_ai
-                    local_3d_ai.prepare_local_assets(configs, update_loading)
-                except Exception as exc:
-                    if loading.winfo_exists():
-                        loading.destroy()
-                    dlg.deiconify()
-                    dlg.grab_set()
-                    messagebox.showerror(
-                        "TripoSR furniture could not be built",
-                        f"{exc}\n\nNo fallback was opened, so you can retry or "
-                        "select the procedural furniture engine.",
-                        parent=dlg,
-                    )
-                    return
+            if use_catalog:
+                update_loading("Loading native local 3D furniture components...")
             dlg.destroy()
             loading_status.set("Assembling the measured apartment and room designs…")
             loading.update()
