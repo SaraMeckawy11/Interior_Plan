@@ -62,7 +62,7 @@ WALL_GAP = 0.16            # furniture stand-off from the wall line
 
 SCALE_BOOST = 1.15         # enlarge the building shell relative to the walker
                            # (rooms feel bigger; furniture stays real-size)
-CAMERA_FOV = 75.0          # roomy field of view without fisheye distortion
+CAMERA_FOV = 68.0          # professional interior lens without fisheye stretch
 GHOST_MARGIN = 3.0         # keep free-explore mode close to the apartment
 
 EYE_HEIGHT = 1.62
@@ -729,6 +729,46 @@ def build_coffee_table(P, w=1.1, d=0.6):
     return ms, w, d
 
 
+def build_side_table(P, diameter=0.46):
+    """Sculptural side table with a stone top and fluted timber pedestal."""
+    top = _mix_color(P["table"], WHITE_SOFT, 0.22)
+    stem = _mix_color(P["wood"], P["wood_dark"], 0.28)
+    meshes = [
+        _cyl(diameter * 0.48, 0.055, top, z=0.47, res=40),
+        _cyl(diameter * 0.23, 0.45, stem, z=0.03, res=32),
+        _cyl(
+            diameter * 0.34,
+            0.035,
+            _mix_color(P["wood_dark"], P["metal"], 0.10),
+            z=0.0,
+            res=32,
+        ),
+    ]
+    apply_archviz_material(
+        meshes[0],
+        "marble",
+        tint=top,
+        tint_strength=0.14,
+        repeat_m=0.7,
+    )
+    apply_archviz_material(
+        meshes[1],
+        "warm_oak",
+        tint=stem,
+        tint_strength=0.28,
+        repeat_m=0.55,
+    )
+    # A restrained hand-thrown ceramic object avoids repeating the angular
+    # vase asset at every styling point.
+    ceramic = _mix_color(P["accent"], P["wall"], 0.34)
+    meshes.extend([
+        _cyl(0.052, 0.13, ceramic, z=0.53, res=32),
+        _sph(0.065, ceramic, z=0.62),
+        _cyl(0.027, 0.055, _shade(ceramic, 0.88), z=0.675, res=24),
+    ])
+    return meshes, diameter, diameter
+
+
 def build_rug(P, w=2.6, d=1.8, design="plain woven"):
     """Build one low-profile rounded rug without overlapping slab layers."""
     design = str(design or "plain woven").lower()
@@ -901,12 +941,41 @@ def build_wardrobe(P, w=1.8, d=0.62):
 
 
 def build_dining_table(P, w=1.7, d=0.95):
-    ms = [_bx(w, d, 0.05, P["wood"], z=0.72)]
+    ms = [_rounded_cuboid(
+        w, d, 0.07, P["wood"], z=0.70, roundness=0.12
+    )]
     for sx in (-1, 1):
         for sy in (-1, 1):
             ms.append(_bx(0.07, 0.07, 0.72, P["wood_dark"],
                           cx=sx * (w / 2 - 0.09), cy=sy * (d / 2 - 0.09)))
-    ms.append(_cyl(0.10, 0.22, P["accent"], z=0.77))                # centerpiece vase
+    apply_archviz_material(
+        ms[0], "warm_oak", tint=P["wood"], tint_strength=0.22, repeat_m=1.25
+    )
+    ms.extend([
+        _cyl(0.14, 0.045, _mix_color(P["table"], P["metal"], 0.18), z=0.78),
+        _cyl(0.048, 0.17, P["accent"], z=0.825, res=28),
+    ])
+    for endpoint, radius, color in (
+        ((-0.09, 0.02, 1.13), 0.052, GREEN_FOLIAGE),
+        ((0.08, -0.02, 1.08), 0.048, _shade(GREEN_FOLIAGE, 1.16)),
+        ((0.02, 0.06, 1.18), 0.045, _shade(GREEN_FOLIAGE, 0.92)),
+    ):
+        stem = _cylinder_between(
+            (0.0, 0.0, 0.98),
+            endpoint,
+            0.006,
+            _shade(GREEN_FOLIAGE, 0.62),
+            resolution=12,
+        )
+        if stem is not None:
+            ms.append(stem)
+        ms.append(_sph(
+            radius,
+            color,
+            cx=endpoint[0],
+            cy=endpoint[1],
+            z=endpoint[2],
+        ))
     return ms, w, d
 
 
@@ -1017,7 +1086,13 @@ def build_island(P, w=1.7, d=0.9):
     ms = [
         _bx(w, d, 0.88, P["cabinet"]),
         _bx(w + 0.08, d + 0.08, 0.05, P["counter"], z=0.88),
-        _cyl(0.11, 0.28, P["accent"], cx=-w * 0.2, z=0.93),         # bowl
+        _cyl(
+            0.16, 0.045, _mix_color(P["accent"], P["table"], 0.38),
+            cx=-w * 0.18, z=0.95, res=32,
+        ),
+        _sph(0.055, [0.72, 0.28, 0.16], cx=-w * 0.23, z=1.03),
+        _sph(0.052, [0.84, 0.60, 0.20], cx=-w * 0.14, cy=0.03, z=1.02),
+        _sph(0.048, [0.48, 0.60, 0.26], cx=-w * 0.11, cy=-0.04, z=1.02),
     ]
     apply_archviz_material(
         ms[0],
@@ -1079,11 +1154,51 @@ def build_vanity(P, w=1.0, d=0.52):
 
 
 def build_toilet(P, w=0.42, d=0.66):
-    return [
-        _bx(0.42, 0.18, 0.78, WHITE_SOFT, cy=-(d / 2 - 0.09)),      # tank
-        _bx(0.38, 0.42, 0.40, WHITE_SOFT, cy=(d / 2 - 0.26)),       # base
-        _cyl(0.20, 0.05, WHITE_SOFT, cy=(d / 2 - 0.24), z=0.40),    # seat
-    ], w, d
+    ceramic = _mix_color(WHITE_SOFT, P["wall"], 0.05)
+    tank_y = -(d / 2 - 0.09)
+    bowl_y = 0.08
+    meshes = [
+        _rounded_cuboid(
+            w, 0.18, 0.68, ceramic,
+            cy=tank_y, z=0.10, roundness=0.13,
+        ),
+        _rounded_cuboid(
+            0.28, 0.38, 0.38, ceramic,
+            cy=0.02, z=0.0, roundness=0.28,
+        ),
+        _rounded_cuboid(
+            0.36, 0.46, 0.10, ceramic,
+            cy=bowl_y, z=0.34, roundness=0.38,
+        ),
+        _rounded_cuboid(
+            0.34, 0.43, 0.035, _shade(ceramic, 0.97),
+            cy=bowl_y, z=0.44, roundness=0.40,
+        ),
+        _cyl(
+            0.035, 0.018, P["metal"],
+            cy=tank_y, z=0.80, res=28,
+        ),
+    ]
+    seat = o3d.geometry.TriangleMesh.create_torus(
+        torus_radius=0.145,
+        tube_radius=0.024,
+        radial_resolution=40,
+        tubular_resolution=18,
+    )
+    vertices = np.asarray(seat.vertices)
+    vertices[:, 1] *= 1.28
+    seat.vertices = o3d.utility.Vector3dVector(vertices)
+    seat.translate((0.0, bowl_y, 0.47))
+    meshes.append(_paint(seat, _shade(ceramic, 0.92)))
+    for mesh in meshes[:4] + meshes[5:]:
+        apply_archviz_material(
+            mesh,
+            "plaster",
+            tint=ceramic,
+            tint_strength=0.08,
+            detail_maps=False,
+        )
+    return meshes, w, d
 
 
 def build_shower(P, w=0.95, d=0.95):
@@ -1372,12 +1487,41 @@ def build_towel_rail(P, w=0.68, z=1.05):
     ], w, 0.08
 
 
+def build_bathroom_shelf(P, w=0.72, z=1.05):
+    """Wall shelf with folded towels and bath accessories."""
+    towel = _mix_color(WHITE_SOFT, P["shade"], 0.20)
+    meshes = [
+        _rounded_cuboid(
+            w, 0.20, 0.045, P["wood"], cy=0.06, z=z, roundness=0.10
+        ),
+        _rounded_cuboid(
+            0.30, 0.15, 0.075, towel,
+            cx=-w * 0.18, cy=0.06, z=z + 0.055, roundness=0.18,
+        ),
+        _rounded_cuboid(
+            0.27, 0.14, 0.065, _shade(towel, 0.96),
+            cx=-w * 0.18, cy=0.06, z=z + 0.13, roundness=0.18,
+        ),
+        _cyl(0.038, 0.18, P["accent"], cx=w * 0.20, cy=0.06, z=z + 0.05),
+        _cyl(0.030, 0.14, _shade(P["metal"], 0.86),
+             cx=w * 0.32, cy=0.06, z=z + 0.05),
+    ]
+    apply_archviz_material(
+        meshes[0], "warm_oak", tint=P["wood"], tint_strength=0.25, repeat_m=0.8
+    )
+    for mesh in meshes[1:3]:
+        apply_archviz_material(
+            mesh, "curtain_fabric", tint=towel, tint_strength=0.58, repeat_m=0.4
+        )
+    return meshes, w, 0.22
+
+
 def build_pendant(P, ceiling_h=WALL_H, drop=0.6):
     professional = _professional_detail(
-        "ceiling_light", P, 0.55, 0.55, 0.42, z=ceiling_h - 0.42
+        "ceiling_light", P, 0.42, 0.42, 0.31, z=ceiling_h - 0.34
     )
     if professional:
-        return professional, 0.55, 0.55
+        return professional, 0.42, 0.42
     return [
         _cyl(0.012, drop - 0.14, P["metal"], z=ceiling_h - drop + 0.14),
         _cyl(0.19, 0.14, P["shade"], z=ceiling_h - drop),
@@ -1472,15 +1616,15 @@ def assign_openings(all_room_edges, doors_m, windows_m):
 DOOR_FRAME_COLOR = [0.36, 0.25, 0.15]
 
 
-def _door_frame(op1, op2, wall_angle):
-    """Open doorway trim: two posts + lintel spanning the full wall depth."""
+def _door_frame(op1, op2, wall_angle, frame_color=None):
+    """Open doorway trim with a slim, palette-coordinated architectural casing."""
     op1, op2 = np.array(op1), np.array(op2)
     L = float(np.linalg.norm(op2 - op1))
     if L < 1e-6:
         return []
-    # deep enough to case the FULL assembly: both rooms' walls plus the
-    # band between their polygons (closes the hollow channel at the jambs)
-    depth = WALL_THICKNESS * 2 + 0.38
+    # Deep enough to close the jamb without creating the former bulky portal.
+    depth = max(WALL_THICKNESS + 0.12, 0.22)
+    casing_color = frame_color or DOOR_FRAME_COLOR
 
     def bar(x0, x1, z0, z1):
         m = o3d.geometry.TriangleMesh.create_box(width=x1 - x0, height=depth,
@@ -1488,14 +1632,14 @@ def _door_frame(op1, op2, wall_angle):
         m.translate((x0, -depth / 2, z0))
         m.rotate(_rotz(wall_angle), center=(0, 0, 0))
         m.translate((op1[0], op1[1], 0))
-        return _paint(m, DOOR_FRAME_COLOR)
+        return _paint(m, casing_color)
 
-    return [bar(-0.02, 0.08, 0.0, DOOR_HEIGHT + 0.07),
-            bar(L - 0.08, L + 0.02, 0.0, DOOR_HEIGHT + 0.07),
-            bar(-0.02, L + 0.02, DOOR_HEIGHT - 0.03, DOOR_HEIGHT + 0.07)]
+    return [bar(-0.015, 0.055, 0.0, DOOR_HEIGHT + 0.055),
+            bar(L - 0.055, L + 0.015, 0.0, DOOR_HEIGHT + 0.055),
+            bar(-0.015, L + 0.015, DOOR_HEIGHT - 0.02, DOOR_HEIGHT + 0.055)]
 
 
-def build_walls(edges, wall_color, material_name=None):
+def build_walls(edges, wall_color, material_name=None, trim_color=None):
     """Wall meshes with door/window cutouts, at walkthrough wall height.
 
     Wall pieces that end at a polygon corner are extended slightly so
@@ -1542,7 +1686,14 @@ def build_walls(edges, wall_color, material_name=None):
                 w = wall_segment(op1, op2, DOOR_HEIGHT, WALL_H, wall_color)
                 add_wall(w)
                 if typ == "door":
-                    meshes.extend(_door_frame(op1, op2, wall_angle))
+                    meshes.extend(
+                        _door_frame(
+                            op1,
+                            op2,
+                            wall_angle,
+                            frame_color=trim_color,
+                        )
+                    )
             else:
                 w = wall_segment(op1, op2, 0, WINDOW_SILL, wall_color)
                 add_wall(w)
@@ -2067,7 +2218,11 @@ def build_room_design_surfaces(room_m, edges, P, config):
 
     # One focal wall, chosen from the longest uninterrupted wall span.
     spans = _free_wall_spans(edges)
-    if spans and spans[0][0] >= 1.25:
+    service_room = any(
+        word in str(room_type).lower()
+        for word in ("kitchen", "bath", "laundry", "utility")
+    )
+    if spans and spans[0][0] >= 1.25 and not service_room:
         length, a, b = spans[0]
         direction = (b - a) / max(length, 1e-9)
         normal = np.array([-direction[1], direction[0]])
@@ -2140,10 +2295,6 @@ def build_room_design_surfaces(room_m, edges, P, config):
 
         # Sconces are now part of a compatible classic/industrial lighting
         # family instead of being mixed into every room style.
-        service_room = any(
-            word in str(room_type).lower()
-            for word in ("kitchen", "bath", "laundry", "utility")
-        )
         use_sconces = (
             choices["decor_set"] != "minimal"
             and style_key in ("classic", "industrial")
@@ -2278,7 +2429,7 @@ def _furniture_accessories(asset_key, procedural_meshes):
     if asset_key == "nightstand":
         return procedural_meshes[2:]
     if asset_key == "dining_table":
-        return procedural_meshes[-1:]
+        return procedural_meshes[5:]
     if asset_key == "sideboard":
         return procedural_meshes[2:]
     if asset_key == "kitchen_island":
@@ -2355,7 +2506,7 @@ class RoomFurnisher:
         for e in edges:
             p1, p2 = np.array(e["p1"]), np.array(e["p2"])
             for typ, t0, t1 in e.get("openings", []):
-                if typ != "door":
+                if typ not in ("door", "door_hole"):
                     continue
                 c = p1 + (p2 - p1) * ((t0 + t1) / 2)
                 self.door_zones.append(Point(c[0], c[1]).buffer(0.95))
@@ -2567,20 +2718,43 @@ class RoomFurnisher:
             and not any(fp.intersects(zone) for zone in self.door_zones)
         )
 
-    def living_anchor_slots(self):
+    def living_anchor_slots(self, sofa_width=2.35):
         """Rank centered sofa walls by the quality of the complete composition."""
         slots = self.wall_slots()
 
         def score(slot):
-            sofa_pos, sofa_yaw = self._centered_wall_pose(slot, 2.2, 0.95)
-            sofa_fp = footprint_poly(sofa_pos, sofa_yaw, 2.2, 0.95)
-            if slot["len"] < 2.3 or not self._candidate_clear(sofa_fp):
+            sofa_pos, sofa_yaw = self._centered_wall_pose(
+                slot, sofa_width, 0.95
+            )
+            sofa_fp = footprint_poly(
+                sofa_pos, sofa_yaw, sofa_width, 0.95
+            )
+            if (
+                slot["len"] < sofa_width + 0.12
+                or not self._candidate_clear(sofa_fp)
+            ):
                 return -1e6
 
             n, side = slot["n"], slot["dir"]
             score_value = min(slot["len"], 4.5)
             if not slot["edge"].get("openings"):
                 score_value += 2.5
+
+            # Score the entire conversation zone, not just the sofa. This
+            # prevents a sofa from anchoring a corridor wall in an irregular
+            # open-plan apartment where the coffee table and chairs cannot fit.
+            zone_center = sofa_pos + n * 1.30
+            zone_width = min(4.45, sofa_width + 1.95)
+            zone = footprint_poly(
+                zone_center, sofa_yaw, zone_width, 3.25
+            )
+            safe_room = self.poly.buffer(-0.10)
+            if safe_room.is_empty:
+                return -1e6
+            coverage = zone.intersection(safe_room).area / max(zone.area, 1e-9)
+            score_value += coverage * 7.0
+            if coverage < 0.82:
+                score_value -= (0.82 - coverage) * 18.0
 
             table_pos = sofa_pos + n * 1.5
             table_fp = footprint_poly(table_pos, sofa_yaw, 1.1, 0.6)
@@ -2611,6 +2785,163 @@ class RoomFurnisher:
             return score_value
 
         return sorted(slots, key=score, reverse=True)
+
+    def find_open_pose(self, width, depth, preferred=None, yaws=None):
+        """Find the best empty interior zone for a complete furniture group."""
+        safe_room = self.poly.buffer(-0.12)
+        if safe_room.is_empty:
+            return None
+        if yaws is None:
+            yaws = [
+                yaw_facing(slot["n"]) for slot in self.wall_slots()[:6]
+            ] or [0.0, math.pi / 2]
+        # Avoid evaluating the same axis repeatedly on rectilinear plans.
+        unique_yaws = []
+        for yaw in yaws:
+            axis_yaw = float(yaw) % math.pi
+            if not any(
+                abs(math.sin(axis_yaw - known)) < 0.08
+                for known in unique_yaws
+            ):
+                unique_yaws.append(axis_yaw)
+
+        minx, miny, maxx, maxy = safe_room.bounds
+        spacing = 0.42
+        margin = min(0.38, min(width, depth) * 0.18)
+        xs = np.arange(minx + margin, maxx - margin + 0.01, spacing)
+        ys = np.arange(miny + margin, maxy - margin + 0.01, spacing)
+        points = [(float(x), float(y)) for x in xs for y in ys]
+        rep = safe_room.representative_point()
+        points.append((rep.x, rep.y))
+        if preferred is not None:
+            points.append((float(preferred[0]), float(preferred[1])))
+
+        best = None
+        for x, y in points:
+            position = np.array([x, y], dtype=float)
+            for yaw in unique_yaws:
+                fp = footprint_poly(position, yaw, width, depth)
+                if not fp.within(safe_room):
+                    continue
+                if any(fp.intersects(zone) for zone in self.door_zones):
+                    continue
+                if any(fp.intersects(placed) for placed in self.placed):
+                    continue
+                boundary_clearance = fp.distance(self.poly.boundary)
+                placed_clearance = min(
+                    (fp.distance(placed) for placed in self.placed),
+                    default=0.0,
+                )
+                score = boundary_clearance * 1.2 + placed_clearance * 2.0
+                if self.placed:
+                    # In open-plan rooms, intentionally separate the dining
+                    # zone from the conversation group.
+                    score += min(2.0, min(
+                        np.linalg.norm(
+                            position
+                            - np.array(
+                                [placed.centroid.x, placed.centroid.y]
+                            )
+                        )
+                        for placed in self.placed
+                    )) * 0.55
+                if preferred is not None:
+                    score -= np.linalg.norm(
+                        position - np.asarray(preferred, dtype=float)
+                    ) * 0.16
+                else:
+                    score -= np.linalg.norm(position - self.centroid) * 0.05
+                if best is None or score > best[0]:
+                    best = (score, position, yaw, fp)
+        if best is None:
+            return None
+        return dict(pos=best[1], yaw=best[2], footprint=best[3])
+
+    def place_dining_zone(self, position=None, yaw=None, compact=False):
+        """Place one coordinated dining composition as a guaranteed group."""
+        table_builder = self.furniture_builder(
+            "dining_table", build_dining_table
+        )
+        chair_builder = self.furniture_builder(
+            "dining_chair", build_chair
+        )
+        table_width = 1.50 if compact else 1.78
+        table_depth = 0.84 if compact else 0.96
+        zone_width = 2.60 if compact else 3.05
+        zone_depth = 2.10 if compact else 2.46
+        pose = None
+        if position is not None and yaw is not None:
+            fp = footprint_poly(position, yaw, zone_width, zone_depth)
+            if self._ok(fp):
+                pose = dict(
+                    pos=np.asarray(position, dtype=float),
+                    yaw=float(yaw),
+                    footprint=fp,
+                )
+        if pose is None:
+            pose = self.find_open_pose(
+                zone_width,
+                zone_depth,
+                preferred=position,
+                yaws=None if yaw is None else [yaw, yaw + math.pi / 2],
+            )
+        if pose is None:
+            return None
+
+        center = pose["pos"]
+        yaw = pose["yaw"]
+        local_x = np.array([math.cos(yaw), math.sin(yaw)])
+        local_y = np.array([-math.sin(yaw), math.cos(yaw)])
+        self.place_rug(
+            center,
+            yaw,
+            zone_width - 0.08,
+            zone_depth - 0.08,
+        )
+        self.add(
+            table_builder(
+                self.P,
+                w=table_width,
+                d=table_depth,
+            ),
+            center,
+            yaw,
+            block=False,
+            avoid_doors=False,
+            check=False,
+        )
+        side_offset = table_depth / 2 + 0.39
+        longitudinal = table_width * (0.25 if compact else 0.27)
+        for side in (-1, 1):
+            for offset in (-longitudinal, longitudinal):
+                chair_pos = (
+                    center
+                    + local_y * side * side_offset
+                    + local_x * offset
+                )
+                self.add(
+                    chair_builder(self.P),
+                    chair_pos,
+                    yaw_facing(-local_y * side),
+                    block=False,
+                    avoid_doors=False,
+                    check=False,
+                )
+        if not compact:
+            end_offset = table_width / 2 + 0.38
+            for side in (-1, 1):
+                chair_pos = center + local_x * side * end_offset
+                self.add(
+                    chair_builder(self.P),
+                    chair_pos,
+                    yaw_facing(-local_x * side),
+                    block=False,
+                    avoid_doors=False,
+                    check=False,
+                )
+        self.placed.append(pose["footprint"].buffer(0.06))
+        self.pendant(center)
+        return dict(pos=center, yaw=yaw, footprint=pose["footprint"])
 
     def bedroom_anchor_slots(self):
         """Rank centered bed walls as a balanced bed/nightstand composition."""
@@ -2794,35 +3125,92 @@ class RoomFurnisher:
         chair_builder = self.furniture_builder("armchair", build_armchair)
         table_builder = self.furniture_builder("coffee_table", build_coffee_table)
         tv_builder = self.furniture_builder("tv_unit", build_tv_unit)
-        anchor_slots = self.living_anchor_slots()
+        sofa_width = (
+            2.60
+            if self.poly.area >= 28.0
+            else 2.35 if self.poly.area >= 18.0 else 2.10
+        )
+        anchor_slots = self.living_anchor_slots(sofa_width)
         sofa = (
-            self.against_wall(sofa_builder, slots=anchor_slots)
+            self.against_wall(
+                sofa_builder,
+                slots=anchor_slots,
+                w=sofa_width,
+                d=0.98,
+            )
             or self.against_wall(
                 sofa_builder, slots=anchor_slots, w=1.7, d=0.9
             )
         )
+        living_pendant_position = self.centroid
         if sofa:
             n, s = sofa["n"], sofa["s"]
             rug_pos = np.array(sofa["pos"]) + n * 1.55
-            self.place_rug(rug_pos, sofa["yaw"], 2.6, 1.8)
-            self.add(table_builder(self.P),
-                     np.array(sofa["pos"]) + n * 1.5, sofa["yaw"])
-            # armchair beside the rug, angled toward the table. The seeded
-            # side choice gives each generated variation a fresh composition.
+            living_pendant_position = rug_pos
+            rug_width = min(3.25, sofa["w"] + 0.70)
+            self.place_rug(rug_pos, sofa["yaw"], rug_width, 2.05)
+            table_pos = np.array(sofa["pos"]) + n * 1.52
+            self.add(table_builder(self.P, w=1.20, d=0.64),
+                     table_pos, sofa["yaw"])
+            # A professional conversation group uses paired chairs whenever
+            # the room supports them, both angled toward the center.
             chair_sides = [-1, 1]
-            self.rng.shuffle(chair_sides)
             if not self.airy:
                 for side in chair_sides:
-                    ch_pos = np.array(sofa["pos"]) + n * 1.5 + s * side * 1.6
-                    f = (np.array(sofa["pos"]) + n * 1.5) - ch_pos
+                    ch_pos = table_pos + s * side * 1.52 + n * 0.10
+                    f = table_pos - ch_pos
                     f = f / (np.linalg.norm(f) + 1e-9)
-                    if self.add(chair_builder(self.P), ch_pos, yaw_facing(f)):
-                        break
-            # lamp next to the sofa
-            lamp_side = -chair_sides[0]
-            lamp_pos = (np.array(sofa["pos"]) + s * lamp_side * (sofa["w"] / 2 + 0.4)
-                        + n * 0.05)
-            self.add(build_floor_lamp(self.P), lamp_pos, 0.0)
+                    placed = self.add(
+                        chair_builder(self.P), ch_pos, yaw_facing(f)
+                    )
+                    if not placed:
+                        # Concave open-plan rooms can clip the perfectly
+                        # symmetrical position by only a few centimetres.
+                        # Slide that chair toward the open side while keeping
+                        # it aimed at the coffee table.
+                        for lateral, forward in (
+                            (1.36, 0.42),
+                            (1.22, 0.58),
+                            (1.48, 0.62),
+                        ):
+                            ch_pos = (
+                                table_pos
+                                + s * side * lateral
+                                + n * forward
+                            )
+                            f = table_pos - ch_pos
+                            f = f / (np.linalg.norm(f) + 1e-9)
+                            if self.add(
+                                chair_builder(self.P),
+                                ch_pos,
+                                yaw_facing(f),
+                            ):
+                                break
+
+            # Styled side tables frame the sofa and visually connect the
+            # seating family. Keep one side open in small/airy rooms.
+            table_sides = (-1, 1) if self.layered or self.poly.area >= 22 else (1,)
+            placed_side_tables = []
+            for side in table_sides:
+                side_pos = (
+                    np.array(sofa["pos"])
+                    + s * side * (sofa["w"] / 2 + 0.31)
+                    + n * 0.08
+                )
+                if self.add(build_side_table(self.P), side_pos, sofa["yaw"]):
+                    placed_side_tables.append(side)
+
+            # An arched reading light completes the composition without
+            # repeating the lamp on every side.
+            lamp_side = (
+                -placed_side_tables[0] if placed_side_tables else -1
+            )
+            lamp_pos = (
+                np.array(sofa["pos"])
+                + s * lamp_side * (sofa["w"] / 2 + 0.50)
+                + n * 0.34
+            )
+            self.add(build_floor_lamp(self.P), lamp_pos, sofa["yaw"])
             if self.airy:
                 self.art_on(sofa)
             else:
@@ -2837,13 +3225,41 @@ class RoomFurnisher:
             if self.layered:
                 ottoman_pos = np.array(sofa["pos"]) + n * 1.48 - s * 1.35
                 self.add(build_ottoman(self.P), ottoman_pos, sofa["yaw"])
+
+        # Large living polygons in real plans are usually open living/dining
+        # rooms. Treating them as one sofa vignette left most of the apartment
+        # empty, so automatically zone the largest remaining clear area.
+        dining_zone = None
+        if self.poly.area >= 30.0 and not any(
+            word in self.brief
+            for word in ("no dining", "without dining", "living only")
+        ):
+            dining_zone = (
+                self.place_dining_zone(compact=False)
+                or self.place_dining_zone(compact=True)
+            )
+            if dining_zone:
+                sideboard_builder = self.furniture_builder(
+                    "sideboard", build_sideboard
+                )
+                sideboard = self.against_wall(sideboard_builder)
+                if sideboard:
+                    self.art_on(sideboard, w=1.05)
         if self.wants_plants:
             self.in_corner(build_plant)
         if not self.airy:
-            console = self.against_wall(build_console_table)
+            # Use the same production furniture family as the media and
+            # dining storage instead of a primitive hallway table.
+            console = self.against_wall(
+                self.furniture_builder("sideboard", build_sideboard),
+                w=1.35,
+                d=0.42,
+            )
             if console and self.layered:
                 self.mirror_on(console, diameter=0.78)
-        self.pendant()
+        # The dining zone has its own pendant. Keep a second light centered on
+        # the conversation area instead of one arbitrary fixture in the room.
+        self.pendant(living_pendant_position)
 
     def furnish_bedroom(self):
         bed_builder = self.furniture_builder("bed", build_bed)
@@ -2889,6 +3305,20 @@ class RoomFurnisher:
                 block=False,
                 ornate=self.design_choices["style_key"] == "classic",
             )
+        if self.poly.area >= 18.0 and not self.airy:
+            reading = self.against_wall(
+                self.furniture_builder("armchair", build_armchair),
+                min_side=1.05,
+                w=0.86,
+                d=0.82,
+            )
+            if reading:
+                lamp_pos = (
+                    np.asarray(reading["pos"])
+                    + reading["s"] * (reading["w"] / 2 + 0.30)
+                    + reading["n"] * 0.10
+                )
+                self.add(build_floor_lamp(self.P), lamp_pos, reading["yaw"])
         self.pendant()
 
     def furnish_kitchen(self):
@@ -2917,7 +3347,70 @@ class RoomFurnisher:
                     placed_fr = True
                     break
             if not placed_fr:
-                self.against_wall(fridge_builder)
+                # Search both ends of every other free wall. Center-only
+                # placement often collided with the long cabinet run in a
+                # compact galley kitchen and silently removed the fridge.
+                for slot in slots:
+                    if slot["edge"] is run["slot"]["edge"]:
+                        continue
+                    for fraction in (
+                        slot["t0"] + min(0.15, 0.32 / slot["edge"]["length"]),
+                        slot["t1"] - min(0.15, 0.32 / slot["edge"]["length"]),
+                    ):
+                        anchor = (
+                            slot["p1"]
+                            + (slot["p2"] - slot["p1"]) * fraction
+                        )
+                        position = (
+                            anchor
+                            + slot["n"] * (
+                                WALL_GAP - 0.04 + fr[2] / 2
+                            )
+                        )
+                        if self.add(
+                            fridge_builder(self.P),
+                            position,
+                            yaw_facing(slot["n"]),
+                        ):
+                            placed_fr = True
+                            break
+                    if placed_fr:
+                        break
+            if not placed_fr:
+                pose = self.find_open_pose(0.72, 0.70)
+                if pose:
+                    placed_fr = self.add(
+                        fridge_builder(self.P),
+                        pose["pos"],
+                        pose["yaw"],
+                    )
+            # In a generously sized kitchen, add a shorter perpendicular run
+            # to form an authored L-shaped work triangle.
+            if self.poly.area >= 15.0:
+                perpendicular = [
+                    slot for slot in slots
+                    if (
+                        slot["edge"] is not run["slot"]["edge"]
+                        and abs(np.dot(slot["dir"], run["s"])) < 0.30
+                        and slot["len"] >= 1.55
+                    )
+                ]
+                for slot in perpendicular:
+                    length = min(2.15, slot["len"] - 0.12)
+                    built = build_kitchen_run(self.P, w=length)
+                    position = (
+                        slot["mid"]
+                        + slot["n"] * (
+                            WALL_GAP - 0.06 + built[2] / 2
+                        )
+                    )
+                    if self.add(
+                        built,
+                        position,
+                        yaw_facing(slot["n"]),
+                        avoid_doors=True,
+                    ):
+                        break
             # island facing the run if the room is deep enough
             isl_pos = None
             for cand in (run["slot"]["mid"] + run["n"] * 2.35, self.centroid):
@@ -2932,23 +3425,14 @@ class RoomFurnisher:
             self.in_corner(build_plant, tall=False)
 
     def furnish_dining(self):
-        table_builder = self.furniture_builder("dining_table", build_dining_table)
-        chair_builder = self.furniture_builder("dining_chair", build_chair)
         sideboard_builder = self.furniture_builder("sideboard", build_sideboard)
         slots = self.wall_slots()
         yaw = yaw_facing(slots[0]["n"]) if slots else 0.0
-        tbl = table_builder(self.P)
-        if self.add(tbl, self.centroid, yaw):
-            self.place_rug(self.centroid, yaw, 2.8, 2.2)
-            s = np.array([math.cos(yaw), math.sin(yaw)])
-            n = np.array([-s[1], s[0]])
-            for side in (-1, 1):
-                for off in (-0.45, 0.45):
-                    ch_pos = self.centroid + n * side * 0.78 + s * off
-                    self.add(chair_builder(self.P), ch_pos, yaw_facing(-n * side))
-                ch_pos = self.centroid + s * side * 1.15
-                self.add(chair_builder(self.P), ch_pos, yaw_facing(-s * side))
-            self.pendant(self.centroid)
+        self.place_dining_zone(
+            position=self.centroid,
+            yaw=yaw,
+            compact=self.poly.area < 12.0,
+        )
         sb = self.against_wall(sideboard_builder)
         if sb:
             self.art_on(sb, w=1.0)
@@ -3058,6 +3542,7 @@ class RoomFurnisher:
             toilet_builder, slots=slots, w=0.38, d=0.58
         )
         self.against_wall(build_towel_rail, slots=slots, block=False)
+        self.against_wall(build_bathroom_shelf, slots=slots, block=False)
         mat_position = (
             np.asarray(v["pos"]) + v["n"] * (v["d"] / 2 + 0.42)
             if v
@@ -3099,6 +3584,80 @@ class RoomFurnisher:
 
 
 # ================= SCENE BUILD =================
+def _room_light_specs(poly, config):
+    """Return warm architectural light positions distributed within a room."""
+    inner = poly.buffer(-0.62)
+    if inner.is_empty:
+        inner = poly
+    profile = str((config or {}).get("design_profile", "Curated")).lower()
+    area = float(poly.area)
+    points = []
+    minx, miny, maxx, maxy = inner.bounds
+    horizontal = (maxx - minx) >= (maxy - miny)
+    if area >= 30.0:
+        fractions = (0.32, 0.68)
+        for fraction in fractions:
+            x = minx + (maxx - minx) * (
+                fraction if horizontal else 0.50
+            )
+            y = miny + (maxy - miny) * (
+                0.50 if horizontal else fraction
+            )
+            point = Point(float(x), float(y))
+            if inner.contains(point):
+                points.append(np.array([x, y], dtype=float))
+    if not points:
+        point = inner.representative_point()
+        points.append(np.array([point.x, point.y], dtype=float))
+
+    room_type = str((config or {}).get("room_type", "")).lower()
+    neutral = any(
+        word in room_type for word in ("kitchen", "bath", "office")
+    )
+    color = (
+        np.array([1.0, 0.90, 0.78], dtype=np.float32)
+        if neutral
+        else np.array([1.0, 0.82, 0.66], dtype=np.float32)
+    )
+    intensity = 115000.0 if profile == "layered" else 90000.0
+    return [
+        dict(
+            position=np.array([point[0], point[1], WALL_H - 0.28],
+                              dtype=np.float32),
+            color=color,
+            intensity=intensity,
+        )
+        for point in points
+    ]
+
+
+def _configure_pbr_lighting(open3d_scene, lights):
+    """Apply the same daylight-and-warm-fixture rig to live and QA scenes."""
+    open3d_scene.enable_indirect_light(True)
+    open3d_scene.set_indirect_light_intensity(25000.0)
+    open3d_scene.set_sun_light(
+        np.array([-0.35, 0.45, -0.82], dtype=np.float32),
+        np.array([1.0, 0.94, 0.86], dtype=np.float32),
+        42000.0,
+    )
+    open3d_scene.enable_sun_light(True)
+    for index, light in enumerate(lights or []):
+        try:
+            open3d_scene.add_spot_light(
+                f"interior_light_{index:03d}",
+                light["color"],
+                light["position"],
+                np.array([0.0, 0.0, -1.0], dtype=np.float32),
+                float(light["intensity"]),
+                8.0,
+                0.52,
+                1.18,
+                False,
+            )
+        except Exception as exc:
+            print(f"[WALK] Room light {index + 1} unavailable: {exc}")
+
+
 def build_scene(rooms_px, doors_px, windows_px, px_per_m=None, room_configs=None,
                 furnished=True):
     """Full 3D scene from plan pixels.
@@ -3143,6 +3702,7 @@ def build_scene(rooms_px, doors_px, windows_px, px_per_m=None, room_configs=None
     furniture_fps = []
     furniture_objects = []
     room_polys = []
+    room_lights = []
 
     for i, room in enumerate(rooms_m):
         cfg = room_configs[i] if i < len(room_configs) else {}
@@ -3154,6 +3714,7 @@ def build_scene(rooms_px, doors_px, windows_px, px_per_m=None, room_configs=None
         if not poly.is_valid:
             poly = poly.buffer(0)
         room_polys.append(poly)
+        room_lights.extend(_room_light_specs(poly, cfg))
 
         # floor + ceiling in the room's style
         floor = _orient_horizontal_surface(
@@ -3188,7 +3749,11 @@ def build_scene(rooms_px, doors_px, windows_px, px_per_m=None, room_configs=None
         meshes.append(ceil)
 
         selected_wall_material = wall_material(cfg, rtype, style)
-        meshes.extend(build_walls(all_edges[i], P["wall"]))
+        meshes.extend(build_walls(
+            all_edges[i],
+            P["wall"],
+            trim_color=_mix_color(P["wood_dark"], P["wall"], 0.52),
+        ))
         meshes.extend(build_wall_finish_skins(
             room,
             all_edges[i],
@@ -3309,6 +3874,7 @@ def build_scene(rooms_px, doors_px, windows_px, px_per_m=None, room_configs=None
         spawn_yaw=spawn_yaw,
         bounds=bounds,
         furniture_objects=furniture_objects,
+        lights=room_lights,
     )
 
 
@@ -3651,14 +4217,10 @@ def _run_pbr_walkthrough(scene, window_title=None, wall_pass=True):
         rendering.Open3DScene.LightingProfile.SOFT_SHADOWS,
         np.array([0.35, -0.55, -0.76], dtype=np.float32),
     )
-    scene_widget.scene.scene.enable_indirect_light(True)
-    scene_widget.scene.scene.set_indirect_light_intensity(32000.0)
-    scene_widget.scene.scene.set_sun_light(
-        np.array([-0.35, 0.45, -0.82], dtype=np.float32),
-        np.array([1.0, 0.94, 0.86], dtype=np.float32),
-        58000.0,
+    _configure_pbr_lighting(
+        scene_widget.scene.scene,
+        scene.get("lights", []),
     )
-    scene_widget.scene.scene.enable_sun_light(True)
     scene_widget.scene.show_skybox(False)
 
     geometry_names = {}
@@ -4135,37 +4697,19 @@ def _capture_verification(out_dir):
     print(f"[CAPTURE] walkable_area={scene['allowed'].area:.2f} m^2")
 
 
-def _capture_pbr_verification(out_dir):
-    """Render the demo apartment through the same PBR path as the walkthrough."""
+def _capture_pbr_scene(scene, out_dir, shots, title="PBR walkthrough verification"):
+    """Render named camera shots through the production PBR scene path."""
     from open3d.visualization import gui, rendering
 
-    living, bedroom, kitchen, doors, windows, configs = _demo_plan()
-    scene = build_scene(
-        [living, bedroom, kitchen],
-        doors,
-        windows,
-        px_per_m=100,
-        room_configs=configs,
-    )
     os.makedirs(out_dir, exist_ok=True)
 
-    shots = [
-        ("living_from_door", (3.6, -4.4, EYE_HEIGHT), math.radians(160), -0.05),
-        ("living_sofa_view", (4.7, -2.0, EYE_HEIGHT), math.radians(205), -0.10),
-        ("bedroom", (9.1, -2.0, EYE_HEIGHT), math.radians(-90), -0.08),
-        ("kitchen", (2.0, -7.9, EYE_HEIGHT), math.radians(15), -0.05),
-        (
-            "doorway_living_to_bedroom",
-            (5.2, -3.3, EYE_HEIGHT),
-            math.radians(10),
-            0.0,
-        ),
-        ("overview", (3.5, -12.5, 11.0), math.radians(75), -0.90),
-    ]
-
     app = gui.Application.instance
-    app.initialize()
-    window = app.create_window("PBR walkthrough verification", 1280, 800)
+    try:
+        app.initialize()
+    except RuntimeError as exc:
+        if "initialized" not in str(exc).lower():
+            raise
+    window = app.create_window(title, 1280, 800)
     widget = gui.SceneWidget()
     widget.scene = rendering.Open3DScene(window.renderer)
     widget.scene.set_background(
@@ -4175,14 +4719,10 @@ def _capture_pbr_verification(out_dir):
         rendering.Open3DScene.LightingProfile.SOFT_SHADOWS,
         np.array([0.35, -0.55, -0.76], dtype=np.float32),
     )
-    widget.scene.scene.enable_indirect_light(True)
-    widget.scene.scene.set_indirect_light_intensity(32000.0)
-    widget.scene.scene.set_sun_light(
-        np.array([-0.35, 0.45, -0.82], dtype=np.float32),
-        np.array([1.0, 0.94, 0.86], dtype=np.float32),
-        58000.0,
+    _configure_pbr_lighting(
+        widget.scene.scene,
+        scene.get("lights", []),
     )
-    widget.scene.scene.enable_sun_light(True)
     for index, mesh in enumerate(scene["meshes"]):
         widget.scene.add_geometry(
             f"room_mesh_{index:04d}",
@@ -4194,7 +4734,7 @@ def _capture_pbr_verification(out_dir):
     bounds = o3d.geometry.AxisAlignedBoundingBox()
     for mesh in scene["meshes"]:
         bounds += mesh.get_axis_aligned_bounding_box()
-    widget.setup_camera(60.0, bounds, bounds.get_center())
+    widget.setup_camera(CAMERA_FOV, bounds, bounds.get_center())
 
     def set_shot_camera(index):
         _name, eye_values, yaw, pitch = shots[index]
@@ -4254,6 +4794,32 @@ def _capture_pbr_verification(out_dir):
 
     print(f"[PBR CAPTURE] meshes={len(scene['meshes'])}")
     print(f"[PBR CAPTURE] walkable_area={scene['allowed'].area:.2f} m^2")
+
+
+def _capture_pbr_verification(out_dir):
+    """Render the demo apartment through the same PBR path as the walkthrough."""
+    living, bedroom, kitchen, doors, windows, configs = _demo_plan()
+    scene = build_scene(
+        [living, bedroom, kitchen],
+        doors,
+        windows,
+        px_per_m=100,
+        room_configs=configs,
+    )
+    shots = [
+        ("living_from_door", (3.6, -4.4, EYE_HEIGHT), math.radians(160), -0.05),
+        ("living_sofa_view", (4.7, -2.0, EYE_HEIGHT), math.radians(205), -0.10),
+        ("bedroom", (9.1, -2.0, EYE_HEIGHT), math.radians(-90), -0.08),
+        ("kitchen", (2.0, -7.9, EYE_HEIGHT), math.radians(15), -0.05),
+        (
+            "doorway_living_to_bedroom",
+            (5.2, -3.3, EYE_HEIGHT),
+            math.radians(10),
+            0.0,
+        ),
+        ("overview", (3.5, -12.5, 11.0), math.radians(75), -0.90),
+    ]
+    _capture_pbr_scene(scene, out_dir, shots)
 
 
 if __name__ == "__main__":
