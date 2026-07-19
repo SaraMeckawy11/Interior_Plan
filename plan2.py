@@ -732,7 +732,10 @@ def take_room_perspective_screenshot(room_poly, room_name="Room"):
     tk.Label(content_frame, text="Room Type:", font=("Segoe UI", 11, "bold"),
              bg=GALLERY_COLORS["bg"], fg=GALLERY_COLORS["text"]).pack(anchor="w", pady=(20, 5))
     
-    room_types = ["Living Room", "Bedroom", "Kitchen", "Bathroom", "Office", "Dining Room"]
+    room_types = [
+        "Living Room", "Bedroom", "Kitchen", "Bathroom", "Office",
+        "Dining Room", "Entryway", "Hallway", "Laundry", "Utility",
+    ]
     room_type_var = tk.StringVar(value="Living Room")
     
     room_type_menu = ttk.Combobox(content_frame, textvariable=room_type_var, 
@@ -1233,8 +1236,10 @@ def open_walkthrough_dialog():
 
     import plan_walkthrough
 
-    room_types = ["Living Room", "Bedroom", "Kitchen", "Bathroom",
-                  "Office", "Dining Room"]
+    room_types = [
+        "Living Room", "Bedroom", "Kitchen", "Bathroom", "Office",
+        "Dining Room", "Entryway", "Hallway", "Laundry", "Utility",
+    ]
     styles = ["Modern Minimalist", "Scandinavian", "Industrial", "Bohemian",
               "Mid-Century Modern", "Contemporary", "Traditional", "Japandi",
               "Modern", "Minimalist", "Classic", "Boho"]
