@@ -125,7 +125,11 @@ def apply_archviz_material(
         np.ones((len(mesh.vertices), 3), dtype=float)
     )
     mesh.compute_vertex_normals()
+    # Keep the mesh reference with the record. A plain id -> material map can
+    # silently attach an old finish to a newly allocated mesh after Python
+    # reuses an object id during a larger apartment build.
     _MESH_MATERIALS[id(mesh)] = (
+        mesh,
         material_name,
         tint_key,
         round(float(tint_strength), 3),
@@ -190,8 +194,14 @@ def material_record_for_mesh(mesh):
         pass
 
     registered = _MESH_MATERIALS.get(id(mesh))
-    if registered is not None:
-        material_name, tint_key, tint_strength, detail_maps = registered
+    if registered is not None and registered[0] is mesh:
+        (
+            _mesh_reference,
+            material_name,
+            tint_key,
+            tint_strength,
+            detail_maps,
+        ) = registered
         return pbr_material(
             material_name,
             tint=tint_key or None,

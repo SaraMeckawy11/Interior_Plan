@@ -230,7 +230,12 @@ def _palette_material(asset_key, palette):
     return None
 
 
-def _coordinate_material(source_color, target_color, professional=False):
+def _coordinate_material(
+    source_color,
+    target_color,
+    professional=False,
+    coordination_strength=None,
+):
     """Coordinate authored materials without erasing their texture detail."""
     if target_color is None:
         return source_color
@@ -239,10 +244,18 @@ def _coordinate_material(source_color, target_color, professional=False):
     # Professional models already carry carefully authored color variation.
     # A restrained tint keeps the user's palette visible without flattening
     # fabric weave, wood grain, patina, or painted details.
-    weight = np.full_like(brightness, 0.28 if professional else 0.72)
-    weight = np.where(brightness > 0.88, 0.10 if professional else 0.18, weight)
+    strength = (
+        float(coordination_strength)
+        if coordination_strength is not None
+        else (0.28 if professional else 0.72)
+    )
+    weight = np.full_like(brightness, strength)
+    white_weight = min(0.24, max(0.10, strength * 0.28))
+    weight = np.where(brightness > 0.88, white_weight, weight)
+    tonal_floor = 0.84 if strength >= 0.85 else 0.72
+    tonal_range = 0.36 if strength >= 0.85 else 0.48
     tonal_target = np.clip(
-        np.asarray(target_color) * (0.72 + 0.48 * brightness),
+        np.asarray(target_color) * (tonal_floor + tonal_range * brightness),
         0,
         1,
     )
@@ -262,7 +275,12 @@ def _image_pixels(image):
     return np.ascontiguousarray(pixels[:, :, :3])
 
 
-def _authored_texture(source, target_color, professional=False):
+def _authored_texture(
+    source,
+    target_color,
+    professional=False,
+    coordination_strength=None,
+):
     """Return the model's mapped albedo and UVs, retaining real material detail."""
     visual = getattr(source, "visual", None)
     material = getattr(visual, "material", None)
@@ -283,6 +301,7 @@ def _authored_texture(source, target_color, professional=False):
         pixels[:, :, :3].astype(np.float32) / 255.0,
         target_color,
         professional=professional,
+        coordination_strength=coordination_strength,
     )
     texture = np.ascontiguousarray(
         np.clip(np.rint(coordinated * 255.0), 0, 255).astype(np.uint8)
@@ -315,9 +334,10 @@ def _authored_texture(source, target_color, professional=False):
 
 def catalog_material_record_for_mesh(mesh):
     """Return the catalog model's complete glTF PBR material, when available."""
-    spec = _PBR_MESH_MATERIALS.get(id(mesh))
-    if spec is None:
+    registered = _PBR_MESH_MATERIALS.get(id(mesh))
+    if registered is None or registered[0] is not mesh:
         return None
+    spec = registered[1]
     from open3d.visualization import rendering
 
     record = rendering.MaterialRecord()
@@ -368,19 +388,29 @@ def load_catalog_asset(
 
     height = float(height or MODEL_HEIGHTS.get(asset_key, 1.0))
     material_target = _palette_material(asset_key, palette)
+    coordination_strength = {
+        # The contemporary sofa ships with a nearly black default material.
+        # A stronger textile-safe recolor lets it follow the selected room
+        # palette without removing its velvet shading or authored details.
+        "sofa": 0.92,
+        "armchair": 0.66,
+        "office_chair": 0.58,
+        "bed": 0.52,
+        "throw_pillows": 0.58,
+    }.get(asset_key, 0.30)
     material_key = (
         tuple(np.round(material_target, 3))
         if material_target is not None else ()
     )
     cache_key = (
         str(path), round(float(width), 3), round(float(depth), 3),
-        round(height, 3), material_key,
+        round(height, 3), material_key, round(coordination_strength, 2),
     )
     if cache_key in _MESH_CACHE:
         meshes = [copy.deepcopy(mesh) for mesh in _MESH_CACHE[cache_key]]
         for mesh, spec in zip(meshes, _PBR_CACHE.get(cache_key, [])):
             if spec is not None:
-                _PBR_MESH_MATERIALS[id(mesh)] = spec
+                _PBR_MESH_MATERIALS[id(mesh)] = (mesh, spec)
         return meshes
 
     scene = _load_trimesh_scene(path)
@@ -400,7 +430,10 @@ def load_catalog_asset(
         )
         professional = PRO_ROOT in path.parents
         uv, texture, pbr = _authored_texture(
-            source, material_target, professional=professional
+            source,
+            material_target,
+            professional=professional,
+            coordination_strength=coordination_strength,
         )
         if uv is not None and len(uv) == len(source_vertices):
             # White vertex colors let the mapped albedo reach both the legacy
@@ -427,6 +460,7 @@ def load_catalog_asset(
                 vertex_colors,
                 material_target,
                 professional=professional,
+                coordination_strength=coordination_strength,
             )
         component_data.append(
             (
@@ -476,7 +510,7 @@ def load_catalog_asset(
         mesh.compute_vertex_normals()
         _shade_materials(mesh)
         if pbr is not None:
-            _PBR_MESH_MATERIALS[id(mesh)] = pbr
+            _PBR_MESH_MATERIALS[id(mesh)] = (mesh, pbr)
         pbr_specs.append(pbr)
         meshes.append(mesh)
 
