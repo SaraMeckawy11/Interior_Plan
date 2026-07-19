@@ -57,15 +57,15 @@ ASSET_SPECS = {
 
 
 ROOM_ASSETS = {
-    # Single-view reconstruction is strongest on soft, sculpted furniture.
-    # Precise hard-surface objects stay native 3D so tables, cabinetry,
-    # appliances and bathroom fixtures remain straight and functional.
-    "living": ("sofa", "armchair"),
-    "bed": ("bed",),
-    "kitchen": (),
-    "dining": ("dining_chair",),
-    "office": ("office_chair",),
-    "bath": (),
+    # Every primary movable item is reconstructed as volumetric geometry.
+    # Architectural shell pieces and fitted kitchen runs remain deterministic
+    # so walls, openings and measured clearances always match the floor plan.
+    "living": ("sofa", "armchair", "coffee_table", "tv_unit"),
+    "bed": ("bed", "nightstand", "wardrobe"),
+    "kitchen": ("kitchen_island", "fridge"),
+    "dining": ("dining_table", "dining_chair", "sideboard"),
+    "office": ("desk", "office_chair", "bookshelf"),
+    "bath": ("vanity", "toilet", "shower"),
 }
 
 

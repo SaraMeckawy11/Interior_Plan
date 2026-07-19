@@ -1400,16 +1400,17 @@ def open_walkthrough_dialog():
     engine_card = tk.Frame(body, bg=SURFACE, highlightbackground=BORDER,
                            highlightthickness=1)
     engine_card.pack(fill=tk.X, pady=(8, 0))
-    engine_var = tk.StringVar(value="Procedural - instant & stable")
     try:
         import local_3d_ai
         tripo_ready, tripo_reason = local_3d_ai.runtime_status()
     except Exception as exc:
         tripo_ready, tripo_reason = False, f"TripoSR is unavailable: {exc}"
-    engine_values = ["Procedural - instant & stable"]
+    engine_values = []
     if tripo_ready:
-        engine_values.append("TripoSR 3D - local hybrid (experimental)")
-    tk.Label(engine_card, text="FURNITURE GEOMETRY", font=("Segoe UI", 8, "bold"),
+        engine_values.append("Local AI 3D - full designer furniture")
+    engine_values.append("Procedural - instant fallback")
+    engine_var = tk.StringVar(value=engine_values[0])
+    tk.Label(engine_card, text="AUTOMATIC DESIGNER STAGING", font=("Segoe UI", 8, "bold"),
              bg=SURFACE, fg=TEXT_MUTED).grid(
                  row=0, column=0, sticky="w", padx=10, pady=(9, 4))
     ttk.Combobox(
@@ -1418,9 +1419,10 @@ def open_walkthrough_dialog():
     ).grid(row=1, column=0, sticky="w", padx=10, pady=(0, 4))
     tk.Label(
         engine_card,
-        text=(tripo_reason + " TripoSR rebuilds soft furniture as recolored 3D "
-              "geometry. Precise cabinetry, tables and fixtures use clean native "
-              "3D; the complete room remains coordinated."),
+        text=(tripo_reason + " The app chooses focal walls, aligns a complete "
+              "furniture composition, protects doors and circulation, and loads "
+              "every primary item as walk-around 3D geometry. Your style, color, "
+              "floor, walls and brief coordinate the whole apartment."),
         font=("Segoe UI", 9), bg=SURFACE,
         fg=SUCCESS_COLOR if tripo_ready else TEXT_MUTED,
         wraplength=600, justify=tk.LEFT,
@@ -1429,8 +1431,8 @@ def open_walkthrough_dialog():
 
     def launch(only_room=None):
         configs, rooms = [], []
-        variation = "preference-render-v3"
-        use_triposr = engine_var.get().startswith("TripoSR")
+        variation = "designer-staging-v4"
+        use_triposr = engine_var.get().startswith("Local AI 3D")
         for name, tvar, svar in room_vars:
             if only_room and name != only_room:
                 continue

@@ -1409,12 +1409,25 @@ def build_room_design_surfaces(room_m, edges, P, config):
 
 
 # ================= FURNISHING ENGINE =================
-TRIPOSR_SOFT_ASSETS = {
+TRIPOSR_FURNITURE_ASSETS = {
     "sofa",
     "armchair",
+    "coffee_table",
+    "tv_unit",
     "bed",
+    "nightstand",
+    "wardrobe",
+    "kitchen_island",
+    "fridge",
+    "dining_table",
     "dining_chair",
+    "sideboard",
+    "desk",
     "office_chair",
+    "bookshelf",
+    "vanity",
+    "toilet",
+    "shower",
 }
 
 
@@ -1424,9 +1437,46 @@ def _tripo_material_color(asset_key, palette):
         return _mix_color(palette["sofa"], palette["wood_dark"], 0.12)
     if asset_key == "bed":
         return _mix_color(palette["sofa"], palette["cushion"], 0.38)
-    if asset_key == "dining_chair":
+    if asset_key in {
+        "coffee_table", "tv_unit", "nightstand", "dining_table",
+        "dining_chair", "sideboard", "desk", "bookshelf",
+    }:
         return palette["wood"]
-    return palette["wood"]
+    if asset_key in {"wardrobe", "kitchen_island", "vanity"}:
+        return palette["cabinet"]
+    if asset_key == "fridge":
+        return _mix_color([0.70, 0.72, 0.74], palette["metal"], 0.18)
+    if asset_key == "toilet":
+        return [0.94, 0.94, 0.92]
+    if asset_key == "shower":
+        return _mix_color([0.70, 0.82, 0.87], palette["metal"], 0.12)
+    return palette["table"]
+
+
+def _tripo_accessories(asset_key, procedural_meshes):
+    """Keep functional styling that is separate from the generated furniture."""
+    if asset_key == "coffee_table":
+        return procedural_meshes[-1:]
+    if asset_key == "tv_unit":
+        return procedural_meshes[2:]
+    if asset_key == "nightstand":
+        return procedural_meshes[2:]
+    if asset_key == "dining_table":
+        return procedural_meshes[-1:]
+    if asset_key == "sideboard":
+        return procedural_meshes[2:]
+    if asset_key == "kitchen_island":
+        return procedural_meshes[2:]
+    if asset_key == "desk":
+        return procedural_meshes[3:]
+    if asset_key == "bookshelf":
+        return [
+            mesh for index, mesh in enumerate(procedural_meshes)
+            if index > 0 and (index - 1) % 5 != 0
+        ]
+    if asset_key == "vanity":
+        return procedural_meshes[3:]
+    return []
 
 
 def _apply_smooth_material(mesh, color):
@@ -1437,10 +1487,10 @@ def _apply_smooth_material(mesh, color):
         mesh.paint_uniform_color(color)
         return mesh
     shade = (
-        0.42
-        + 0.38 * np.clip(normals @ _KEY_DIR, 0, None)
-        + 0.10 * np.clip(normals @ _FILL_DIR, 0, None)
-        + 0.06 * np.clip(normals[:, 2], 0, None)
+        0.56
+        + 0.28 * np.clip(normals @ _KEY_DIR, 0, None)
+        + 0.08 * np.clip(normals @ _FILL_DIR, 0, None)
+        + 0.08 * np.clip(normals[:, 2], 0, None)
     )
     colors = np.clip(np.asarray(color)[None, :] * shade[:, None], 0, 1)
     mesh.vertex_colors = o3d.utility.Vector3dVector(colors)
@@ -1477,6 +1527,7 @@ class RoomFurnisher:
         self.meshes = []
         self.placed = []          # blocking footprints (shapely)
         self.door_zones = []      # keep-clear zones in front of doors
+        self.circulation_zones = []  # paths from each door into the room
         for e in edges:
             p1, p2 = np.array(e["p1"]), np.array(e["p2"])
             for typ, t0, t1 in e.get("openings", []):
@@ -1484,6 +1535,13 @@ class RoomFurnisher:
                     continue
                 c = p1 + (p2 - p1) * ((t0 + t1) / 2)
                 self.door_zones.append(Point(c[0], c[1]).buffer(0.95))
+                toward_room = self.centroid - c
+                distance = np.linalg.norm(toward_room)
+                if distance > 0.35:
+                    end = c + toward_room / distance * min(1.65, distance * 0.78)
+                    self.circulation_zones.append(
+                        LineString([c, end]).buffer(0.42, cap_style=2)
+                    )
 
     @property
     def layered(self):
@@ -1502,22 +1560,25 @@ class RoomFurnisher:
         return "no rug" not in self.brief
 
     def furniture_builder(self, asset_key, procedural_builder):
-        """Use suitable Tripo geometry, recolored as a true room material."""
+        """Use volumetric Tripo geometry, recolored as a true room material."""
         if (not self.config.get("use_triposr", False)
-                or asset_key not in TRIPOSR_SOFT_ASSETS):
+                or asset_key not in TRIPOSR_FURNITURE_ASSETS):
             return procedural_builder
 
         def build_with_triposr(P, **kw):
             procedural = procedural_builder(P, **kw)
-            _meshes, width, depth = procedural
+            procedural_meshes, width, depth = procedural
             try:
                 from local_3d_ai import load_asset_mesh, preference_key
 
+                # The island footprint includes its stools; the reconstructed
+                # island itself must retain a realistic cabinet depth.
+                mesh_depth = min(depth, 0.90) if asset_key == "kitchen_island" else depth
                 generated = load_asset_mesh(
                     asset_key,
                     self.config.get("style", "Modern"),
                     width,
-                    depth,
+                    mesh_depth,
                     design_key=preference_key(self.config),
                 )
                 if generated:
@@ -1529,6 +1590,9 @@ class RoomFurnisher:
                     material = _tripo_material_color(asset_key, P)
                     for mesh in generated:
                         _apply_smooth_material(mesh, material)
+                    generated.extend(
+                        _tripo_accessories(asset_key, procedural_meshes)
+                    )
                     return generated, width, depth
             except Exception as exc:
                 print(f"[WALK] TripoSR asset '{asset_key}' unavailable: {exc}")
@@ -1583,6 +1647,8 @@ class RoomFurnisher:
             return False
         if avoid_doors and any(fp.intersects(z) for z in self.door_zones):
             return False
+        if avoid_doors and any(fp.intersects(z) for z in self.circulation_zones):
+            return False
         if block and any(fp.intersects(p) for p in self.placed):
             return False
         return True
@@ -1595,12 +1661,12 @@ class RoomFurnisher:
             return False
         self.meshes.extend(place_meshes(meshes, pos, yaw))
         if block:
-            self.placed.append(fp.buffer(0.04))
+            self.placed.append(fp.buffer(0.08))
         return True
 
     def against_wall(self, builder, slots=None, min_side=0.0, prefer=None,
                      block=True, avoid_doors=True, **kw):
-        """Place item centered on the best free wall run. Returns info or None."""
+        """Place an item on the best usable part of a free wall run."""
         slots = slots if slots is not None else self.wall_slots()
         if prefer:
             slots = sorted(slots, key=prefer)
@@ -1610,10 +1676,22 @@ class RoomFurnisher:
             if s["len"] < max(w + 0.1, min_side):
                 continue
             n = s["n"]
-            pos = s["mid"] + n * (WALL_GAP + d / 2)
             yaw = yaw_facing(n)
-            if self.add(built, pos, yaw, block=block, avoid_doors=avoid_doors):
-                return dict(slot=s, pos=pos, yaw=yaw, n=n, s=s["dir"], w=w, d=d)
+            travel = max(0.0, (s["len"] - w) / 2 - 0.06)
+            shifts = [0.0]
+            if travel > 0.08:
+                shifts.extend((travel * 0.62, -travel * 0.62, travel, -travel))
+            for shift in shifts:
+                pos = (
+                    s["mid"] + s["dir"] * shift
+                    + n * (WALL_GAP + d / 2)
+                )
+                if self.add(
+                    built, pos, yaw, block=block, avoid_doors=avoid_doors
+                ):
+                    return dict(
+                        slot=s, pos=pos, yaw=yaw, n=n, s=s["dir"], w=w, d=d
+                    )
         return None
 
     def in_corner(self, builder, **kw):
@@ -1664,22 +1742,26 @@ class RoomFurnisher:
                 self.against_wall(sofa_builder, w=1.7, d=0.9))
         if sofa:
             n, s = sofa["n"], sofa["s"]
-            rug_pos = np.array(sofa["pos"]) + n * 1.55
+            table_distance = sofa["d"] / 2 + 0.44 + 0.30
+            rug_pos = np.array(sofa["pos"]) + n * 1.35
             rug = build_rug(self.P)
             if (self.wants_rugs and
                     footprint_poly(rug_pos, sofa["yaw"], rug[1], rug[2]).within(self.inset)):
                 self.add(rug, rug_pos, sofa["yaw"], block=False,
                          avoid_doors=False, check=False)
             self.add(table_builder(self.P),
-                     np.array(sofa["pos"]) + n * 1.5, sofa["yaw"])
+                     np.array(sofa["pos"]) + n * table_distance, sofa["yaw"])
             # armchair beside the rug, angled toward the table. The seeded
             # side choice gives each generated variation a fresh composition.
             chair_sides = [-1, 1]
             self.rng.shuffle(chair_sides)
             if not self.airy:
                 for side in chair_sides:
-                    ch_pos = np.array(sofa["pos"]) + n * 1.5 + s * side * 1.6
-                    f = (np.array(sofa["pos"]) + n * 1.5) - ch_pos
+                    conversation_center = (
+                        np.array(sofa["pos"]) + n * table_distance
+                    )
+                    ch_pos = conversation_center + s * side * 1.42
+                    f = conversation_center - ch_pos
                     f = f / (np.linalg.norm(f) + 1e-9)
                     if self.add(chair_builder(self.P), ch_pos, yaw_facing(f)):
                         break
@@ -1696,9 +1778,23 @@ class RoomFurnisher:
             tv_slots = [sl for sl in self.wall_slots()
                         if np.dot(sl["n"], n) < -0.6]
             if "no tv" not in self.brief and "without tv" not in self.brief:
-                self.against_wall(tv_builder, slots=tv_slots)
+                tv = self.against_wall(tv_builder, slots=tv_slots)
+                if not tv:
+                    tv = self.against_wall(
+                        tv_builder, slots=tv_slots, w=1.25
+                    )
+                if not tv:
+                    side_slots = [
+                        sl for sl in self.wall_slots()
+                        if np.dot(sl["n"], n) < 0.35
+                    ]
+                    self.against_wall(
+                        tv_builder, slots=side_slots, w=1.25
+                    )
             if self.layered:
-                ottoman_pos = np.array(sofa["pos"]) + n * 1.48 - s * 1.35
+                ottoman_pos = (
+                    np.array(sofa["pos"]) + n * table_distance - s * 1.25
+                )
                 self.add(build_ottoman(self.P), ottoman_pos, sofa["yaw"])
         if self.wants_plants:
             self.in_corner(build_plant)
@@ -1719,7 +1815,7 @@ class RoomFurnisher:
             anchor = np.array(bed["pos"]) - n * (bed["d"] / 2 + WALL_GAP)
             for side in (-1, 1):
                 ns = nightstand_builder(self.P)
-                ns_pos = (anchor + s * side * (bed["w"] / 2 + 0.30)
+                ns_pos = (anchor + s * side * (bed["w"] / 2 + 0.38)
                           + n * (WALL_GAP + ns[2] / 2))
                 self.add(ns, ns_pos, yaw)
             rug_pos = np.array(bed["pos"]) + n * (bed["d"] / 2 - 0.4)
@@ -1736,7 +1832,11 @@ class RoomFurnisher:
                     + n * (bed["d"] / 2 + 0.38)
                 )
                 self.add(build_bench(self.P), bench_pos, yaw)
-        self.against_wall(wardrobe_builder, min_side=2.0)
+        wardrobe = self.against_wall(wardrobe_builder, min_side=2.0)
+        if not wardrobe:
+            self.against_wall(
+                wardrobe_builder, min_side=1.45, w=1.35
+            )
         if self.wants_plants:
             self.in_corner(build_plant, tall=False)
         if self.layered:
@@ -2322,7 +2422,7 @@ def _capture_verification(out_dir):
     shots = [
         ("living_from_door", (3.6, -4.4), math.radians(160), -0.05),
         ("living_sofa_view", (4.7, -2.0), math.radians(205), -0.10),
-        ("bedroom", (9.2, -4.6), math.radians(140), -0.05),
+        ("bedroom", (9.1, -2.0), math.radians(-90), -0.08),
         ("kitchen", (2.0, -7.9), math.radians(15), -0.05),
         ("doorway_living_to_bedroom", (5.2, -3.3), math.radians(10), 0.0),
         ("overview", (3.5, -12.5), math.radians(75), 0.55),
