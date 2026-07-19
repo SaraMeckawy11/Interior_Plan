@@ -1408,7 +1408,7 @@ def open_walkthrough_dialog():
         tripo_ready, tripo_reason = False, f"TripoSR is unavailable: {exc}"
     engine_values = ["Procedural - instant & stable"]
     if tripo_ready:
-        engine_values.append("TripoSR - local AI (experimental)")
+        engine_values.append("TripoSR 3D - local hybrid (experimental)")
     tk.Label(engine_card, text="FURNITURE GEOMETRY", font=("Segoe UI", 8, "bold"),
              bg=SURFACE, fg=TEXT_MUTED).grid(
                  row=0, column=0, sticky="w", padx=10, pady=(9, 4))
@@ -1418,8 +1418,9 @@ def open_walkthrough_dialog():
     ).grid(row=1, column=0, sticky="w", padx=10, pady=(0, 4))
     tk.Label(
         engine_card,
-        text=(tripo_reason + " TripoSR changes furniture meshes only; the complete "
-              "room layout, finishes, lighting and decor stay coordinated."),
+        text=(tripo_reason + " TripoSR rebuilds soft furniture as recolored 3D "
+              "geometry. Precise cabinetry, tables and fixtures use clean native "
+              "3D; the complete room remains coordinated."),
         font=("Segoe UI", 9), bg=SURFACE,
         fg=SUCCESS_COLOR if tripo_ready else TEXT_MUTED,
         wraplength=600, justify=tk.LEFT,

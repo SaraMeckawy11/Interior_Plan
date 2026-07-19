@@ -26,8 +26,11 @@ The setup dialog controls the complete room direction:
 The renderer applies those choices to floors, focal walls, ceiling coves,
 recessed lighting, sconces, curtains, coordinated furniture, rugs, artwork,
 mirrors, plants, and room-specific decoration. Walls, doors, and windows remain
-authoritative from the floor plan. TripoSR changes furniture geometry only, so
-the whole-room layout, scale, finishes, lighting, decor, collision, and
-circulation remain controlled by the same coordinated design engine.
+authoritative from the floor plan. TripoSR reconstructs suitable soft furniture
+as real geometry, then the renderer replaces its image-projected colors with
+coordinated 3D materials. Precise tables, cabinetry, appliances, and fixtures
+use clean native geometry. The whole-room layout, scale, finishes, lighting,
+decor, collision, and circulation remain controlled by the same coordinated
+design engine.
 
 Run the desktop application with `run_app.bat`.

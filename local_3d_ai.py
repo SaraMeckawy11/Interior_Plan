@@ -57,12 +57,15 @@ ASSET_SPECS = {
 
 
 ROOM_ASSETS = {
-    "living": ("sofa", "armchair", "coffee_table", "tv_unit"),
-    "bed": ("bed", "nightstand", "wardrobe"),
-    "kitchen": ("kitchen_island", "fridge"),
-    "dining": ("dining_table", "dining_chair", "sideboard"),
-    "office": ("desk", "office_chair", "bookshelf"),
-    "bath": ("vanity", "toilet", "shower"),
+    # Single-view reconstruction is strongest on soft, sculpted furniture.
+    # Precise hard-surface objects stay native 3D so tables, cabinetry,
+    # appliances and bathroom fixtures remain straight and functional.
+    "living": ("sofa", "armchair"),
+    "bed": ("bed",),
+    "kitchen": (),
+    "dining": ("dining_chair",),
+    "office": ("office_chair",),
+    "bath": (),
 }
 
 
@@ -351,6 +354,10 @@ def load_asset_mesh(asset_key, style, width, depth, height=None, design_key=None
     vertices = np.asarray(mesh.vertices).copy()
     source_extents = np.ptp(vertices, axis=0)
     if np.any(source_extents < 1e-6):
+        return None
+    # Reject a failed reconstruction that is effectively a textured card.
+    # A valid walk-around object must have meaningful volume on every axis.
+    if source_extents.min() / source_extents.max() < 0.08:
         return None
 
     target_extents = np.array([float(width), float(depth), height])

@@ -1409,6 +1409,44 @@ def build_room_design_surfaces(room_m, edges, P, config):
 
 
 # ================= FURNISHING ENGINE =================
+TRIPOSR_SOFT_ASSETS = {
+    "sofa",
+    "armchair",
+    "bed",
+    "dining_chair",
+    "office_chair",
+}
+
+
+def _tripo_material_color(asset_key, palette):
+    """Replace image-projected colors with a real room material."""
+    if asset_key in {"sofa", "armchair", "office_chair"}:
+        return _mix_color(palette["sofa"], palette["wood_dark"], 0.12)
+    if asset_key == "bed":
+        return _mix_color(palette["sofa"], palette["cushion"], 0.38)
+    if asset_key == "dining_chair":
+        return palette["wood"]
+    return palette["wood"]
+
+
+def _apply_smooth_material(mesh, color):
+    """Shade a reconstructed surface smoothly without any image projection."""
+    mesh.compute_vertex_normals()
+    normals = np.asarray(mesh.vertex_normals)
+    if len(normals) != len(mesh.vertices):
+        mesh.paint_uniform_color(color)
+        return mesh
+    shade = (
+        0.42
+        + 0.38 * np.clip(normals @ _KEY_DIR, 0, None)
+        + 0.10 * np.clip(normals @ _FILL_DIR, 0, None)
+        + 0.06 * np.clip(normals[:, 2], 0, None)
+    )
+    colors = np.clip(np.asarray(color)[None, :] * shade[:, None], 0, 1)
+    mesh.vertex_colors = o3d.utility.Vector3dVector(colors)
+    return mesh
+
+
 class RoomFurnisher:
     """Style-aware layout engine for a coherent, walkable 3D interior."""
 
@@ -1464,8 +1502,9 @@ class RoomFurnisher:
         return "no rug" not in self.brief
 
     def furniture_builder(self, asset_key, procedural_builder):
-        """Use a cached TripoSR mesh for this item, with a safe local fallback."""
-        if not self.config.get("use_triposr", False):
+        """Use suitable Tripo geometry, recolored as a true room material."""
+        if (not self.config.get("use_triposr", False)
+                or asset_key not in TRIPOSR_SOFT_ASSETS):
             return procedural_builder
 
         def build_with_triposr(P, **kw):
@@ -1482,11 +1521,14 @@ class RoomFurnisher:
                     design_key=preference_key(self.config),
                 )
                 if generated:
-                    if (not generated[0].has_vertex_colors()
-                            and not generated[0].has_textures()):
-                        generated[0].paint_uniform_color(
-                            P.get("wood", [0.65, 0.5, 0.35])
-                        )
+                    # TripoSR derives dense vertex colors from a single product
+                    # image. Keeping them makes the mesh look like that photo
+                    # was pasted onto the object. Discard the projection and
+                    # apply a coherent material with smooth lighting derived
+                    # from the mesh's real surface normals.
+                    material = _tripo_material_color(asset_key, P)
+                    for mesh in generated:
+                        _apply_smooth_material(mesh, material)
                     return generated, width, depth
             except Exception as exc:
                 print(f"[WALK] TripoSR asset '{asset_key}' unavailable: {exc}")
