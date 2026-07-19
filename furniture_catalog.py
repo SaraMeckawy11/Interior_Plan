@@ -9,6 +9,7 @@ planes or screenshot projections are used.
 Sources:
 https://polyhaven.com/ (CC0)
 https://kenney.nl/assets/furniture-kit (CC0)
+https://github.com/KhronosGroup/glTF-Sample-Assets (CC BY 4.0 asset noted below)
 """
 
 from __future__ import annotations
@@ -57,7 +58,7 @@ MODEL_HEIGHTS = {
 }
 
 DEFAULT_MODELS = {
-    "sofa": "pro/sofa_03/sofa_03_1k.gltf",
+    "sofa": "pro/glam_velvet_sofa/GlamVelvetSofa.glb",
     "armchair": "pro/modern_arm_chair_01/modern_arm_chair_01_1k.gltf",
     "coffee_table": "pro/modern_coffee_table_01/modern_coffee_table_01_1k.gltf",
     "tv_unit": "pro/modern_wooden_cabinet/modern_wooden_cabinet_1k.gltf",
@@ -102,11 +103,27 @@ DEFAULT_MODELS = {
 }
 
 MODERN_MODELS = {
-    "sofa": "pro/sofa_03/sofa_03_1k.gltf",
+    "sofa": "pro/glam_velvet_sofa/GlamVelvetSofa.glb",
     "armchair": "pro/modern_arm_chair_01/modern_arm_chair_01_1k.gltf",
     "coffee_table": "pro/modern_coffee_table_01/modern_coffee_table_01_1k.gltf",
     "tv_unit": "pro/modern_wooden_cabinet/modern_wooden_cabinet_1k.gltf",
     "sideboard": "pro/modern_wooden_cabinet/modern_wooden_cabinet_1k.gltf",
+}
+
+BOHO_MODELS = {
+    # Relaxed contemporary silhouettes coordinate with layered natural
+    # textiles much better than the former Gothic/ornate classic family.
+    "sofa": "pro/glam_velvet_sofa/GlamVelvetSofa.glb",
+    "armchair": "pro/modern_arm_chair_01/modern_arm_chair_01_1k.gltf",
+    "coffee_table": "pro/modern_coffee_table_01/modern_coffee_table_01_1k.gltf",
+    "tv_unit": "pro/modern_wooden_cabinet/modern_wooden_cabinet_1k.gltf",
+    "sideboard": "pro/modern_wooden_cabinet/modern_wooden_cabinet_1k.gltf",
+    "nightstand": (
+        "pro/painted_wooden_nightstand/"
+        "painted_wooden_nightstand_1k.gltf"
+    ),
+    "wardrobe": "pro/drawer_cabinet/drawer_cabinet_1k.gltf",
+    "bed": None,
 }
 
 CLASSIC_MODELS = {
@@ -125,7 +142,8 @@ MODERN_STYLE_WORDS = {
     "modern", "contemporary", "minimalist", "scandinavian", "japandi",
     "industrial", "mid-century",
 }
-CLASSIC_STYLE_WORDS = {"classic", "traditional", "bohemian", "boho"}
+CLASSIC_STYLE_WORDS = {"classic", "traditional"}
+BOHO_STYLE_WORDS = {"bohemian", "boho"}
 
 _MESH_CACHE = {}
 _PBR_CACHE = {}
@@ -180,6 +198,8 @@ def _model_name(asset_key: str, style: str) -> str | None:
     style_key = (style or "").lower()
     if any(word in style_key for word in CLASSIC_STYLE_WORDS):
         return CLASSIC_MODELS.get(asset_key, DEFAULT_MODELS.get(asset_key))
+    if any(word in style_key for word in BOHO_STYLE_WORDS):
+        return BOHO_MODELS.get(asset_key, DEFAULT_MODELS.get(asset_key))
     if any(word in style_key for word in MODERN_STYLE_WORDS):
         return MODERN_MODELS.get(asset_key, DEFAULT_MODELS.get(asset_key))
     return DEFAULT_MODELS.get(asset_key)
@@ -219,8 +239,8 @@ def _coordinate_material(source_color, target_color, professional=False):
     # Professional models already carry carefully authored color variation.
     # A restrained tint keeps the user's palette visible without flattening
     # fabric weave, wood grain, patina, or painted details.
-    weight = np.full_like(brightness, 0.18 if professional else 0.72)
-    weight = np.where(brightness > 0.88, 0.08 if professional else 0.18, weight)
+    weight = np.full_like(brightness, 0.28 if professional else 0.72)
+    weight = np.where(brightness > 0.88, 0.10 if professional else 0.18, weight)
     tonal_target = np.clip(
         np.asarray(target_color) * (0.72 + 0.48 * brightness),
         0,
