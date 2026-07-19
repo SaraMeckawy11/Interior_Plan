@@ -1253,14 +1253,28 @@ def open_walkthrough_dialog():
     dlg.configure(bg=BG_COLOR)
     dlg.transient(root)
     dlg.grab_set()
-    dlg.resizable(False, True)
+    dlg.resizable(True, True)
     dlg.minsize(660, 560)
-    dlg.maxsize(760, max(620, root.winfo_screenheight() - 80))
-    dlg.geometry(f"+{root.winfo_x() + 260}+{root.winfo_y() + 90}")
+    screen_w = dlg.winfo_screenwidth()
+    screen_h = dlg.winfo_screenheight()
+    dialog_w = min(720, max(660, screen_w - 80))
+    dialog_h = min(820, max(560, screen_h - 120))
+    dialog_x = max(20, min(
+        root.winfo_x() + 260, screen_w - dialog_w - 20
+    ))
+    dialog_y = max(20, min(
+        root.winfo_y() + 60, screen_h - dialog_h - 40
+    ))
+    dlg.maxsize(max(dialog_w, screen_w - 40), max(dialog_h, screen_h - 60))
+    dlg.geometry(
+        f"{dialog_w}x{dialog_h}+{dialog_x}+{dialog_y}"
+    )
+    dlg.grid_columnconfigure(0, weight=1)
+    dlg.grid_rowconfigure(2, weight=1)
 
     # Header band
     head = tk.Frame(dlg, bg=SURFACE)
-    head.pack(fill=tk.X)
+    head.grid(row=0, column=0, sticky="ew")
     tk.Label(head, text="3D Interior Walkthrough", font=("Segoe UI", 17, "bold"),
              bg=SURFACE, fg=TEXT_COLOR).pack(anchor="w", padx=24, pady=(18, 3))
     tk.Label(head, text="Turn the floor plan into a coordinated interior you can explore.",
@@ -1274,10 +1288,55 @@ def open_walkthrough_dialog():
         tk.Label(steps, text=label, font=("Segoe UI", 9, "bold"),
                  bg="#f1f5f9", fg=color, padx=10, pady=5).pack(
                      side=tk.LEFT, padx=(0, 8))
-    tk.Frame(dlg, bg=BORDER, height=1).pack(fill=tk.X)
+    tk.Frame(dlg, bg=BORDER, height=1).grid(
+        row=1, column=0, sticky="ew"
+    )
 
-    body = tk.Frame(dlg, bg=BG_COLOR)
-    body.pack(fill=tk.BOTH, expand=True, padx=24, pady=18)
+    # The preference form can exceed the screen height when a plan has many
+    # rooms. Keep only this middle section scrollable; the launch actions stay
+    # pinned in a dedicated footer below it.
+    content_shell = tk.Frame(dlg, bg=BG_COLOR)
+    content_shell.grid(row=2, column=0, sticky="nsew")
+    content_shell.grid_rowconfigure(0, weight=1)
+    content_shell.grid_columnconfigure(0, weight=1)
+
+    body_canvas = tk.Canvas(
+        content_shell,
+        bg=BG_COLOR,
+        highlightthickness=0,
+        borderwidth=0,
+    )
+    body_scrollbar = ttk.Scrollbar(
+        content_shell, orient=tk.VERTICAL, command=body_canvas.yview
+    )
+    body_canvas.configure(yscrollcommand=body_scrollbar.set)
+    body_canvas.grid(row=0, column=0, sticky="nsew")
+    body_scrollbar.grid(row=0, column=1, sticky="ns")
+
+    body = tk.Frame(body_canvas, bg=BG_COLOR, padx=24, pady=18)
+    body_window = body_canvas.create_window(
+        (0, 0), window=body, anchor="nw"
+    )
+
+    def sync_scroll_region(_event=None):
+        body_canvas.configure(scrollregion=body_canvas.bbox("all"))
+
+    def fit_form_width(event):
+        body_canvas.itemconfigure(
+            body_window, width=max(1, event.width)
+        )
+
+    def scroll_preferences(event):
+        first, last = body_canvas.yview()
+        if first <= 0.0 and last >= 1.0:
+            return
+        direction = -1 if event.delta > 0 else 1
+        body_canvas.yview_scroll(direction * 3, "units")
+        return "break"
+
+    body.bind("<Configure>", sync_scroll_region)
+    body_canvas.bind("<Configure>", fit_form_width)
+    dlg.bind("<MouseWheel>", scroll_preferences)
 
     global_card = tk.Frame(body, bg=SURFACE, highlightbackground=BORDER,
                            highlightthickness=1)
@@ -1485,15 +1544,25 @@ def open_walkthrough_dialog():
                 loading.destroy()
 
     # Footer
-    tk.Frame(dlg, bg=BORDER, height=1).pack(fill=tk.X)
     btns = tk.Frame(dlg, bg=SURFACE)
-    btns.pack(fill=tk.X)
+    btns.grid(row=3, column=0, sticky="ew")
+    tk.Frame(btns, bg=BORDER, height=1).pack(fill=tk.X)
     inner = tk.Frame(btns, bg=SURFACE)
     inner.pack(anchor="e", padx=20, pady=14)
     make_btn(inner, "Cancel", SECONDARY_COLOR, SECONDARY_HOVER, fg=TEXT_COLOR,
              command=dlg.destroy).pack(side=tk.LEFT, padx=6)
-    make_btn(inner, "Build & start walkthrough", PURPLE_COLOR, PURPLE_HOVER,
-             command=launch, font_size=11).pack(side=tk.LEFT, padx=6)
+    run_button = make_btn(
+        inner,
+        "Build & start walkthrough",
+        PURPLE_COLOR,
+        PURPLE_HOVER,
+        command=launch,
+        font_size=11,
+        default=tk.ACTIVE,
+    )
+    run_button.pack(side=tk.LEFT, padx=6)
+    dlg.bind("<Escape>", lambda _event: dlg.destroy())
+    dlg.bind("<Control-Return>", lambda _event: launch())
 
 
 # ---------- TOOLBAR BUTTONS (created after their commands exist) ----------
