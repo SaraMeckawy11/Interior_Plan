@@ -191,7 +191,7 @@ STYLE_DESIGN_PRESETS = {
         rug_design="bordered",
         curtain_design="linen drapes",
         decor_set="sculptural",
-        wall_treatment="wood slats",
+        wall_treatment="accent color",
     ),
     "classic": dict(
         rug_design="vintage pattern",
@@ -203,7 +203,7 @@ STYLE_DESIGN_PRESETS = {
         rug_design="plain woven",
         curtain_design="sheer panels",
         decor_set="art & greenery",
-        wall_treatment="wood slats",
+        wall_treatment="warm paint",
     ),
     "boho": dict(
         rug_design="vintage pattern",
@@ -248,17 +248,27 @@ def room_design_choices(config=None, room_type=""):
 
     room_key = (room_type or config.get("room_type", "")).lower()
     if automatic["rug_design"] and any(
-        word in room_key for word in ("kitchen", "laundry", "utility")
+        word in room_key
+        for word in (
+            "kitchen", "laundry", "utility", "hall", "corridor", "entry"
+        )
     ):
         choices["rug_design"] = "none"
     if automatic["rug_design"] and "bath" in room_key:
         choices["rug_design"] = "plain woven"
     if automatic["curtain_design"] and "bath" in room_key:
         choices["curtain_design"] = "none"
+    elif automatic["curtain_design"] and any(
+        word in room_key for word in ("hall", "corridor", "entry", "utility")
+    ):
+        choices["curtain_design"] = "none"
     elif automatic["curtain_design"] and "kitchen" in room_key:
         choices["curtain_design"] = "sheer panels"
     if automatic["decor_set"] and any(
-        word in room_key for word in ("kitchen", "bath", "laundry", "utility")
+        word in room_key
+        for word in (
+            "kitchen", "bath", "laundry", "utility", "hall", "corridor"
+        )
     ):
         choices["decor_set"] = "minimal"
     if "bath" in room_key:
@@ -539,6 +549,61 @@ def _cyl(r, h, color, cx=0.0, cy=0.0, z=0.0, res=24):
     return _paint(m, color)
 
 
+def _cylinder_between(start, end, radius, color, resolution=24):
+    """Create a cylinder aligned between arbitrary 3D endpoints."""
+    start = np.asarray(start, dtype=float)
+    end = np.asarray(end, dtype=float)
+    vector = end - start
+    length = float(np.linalg.norm(vector))
+    if length < 1e-5:
+        return None
+    direction = vector / length
+    mesh = o3d.geometry.TriangleMesh.create_cylinder(
+        radius=radius, height=length, resolution=resolution
+    )
+    axis = np.cross(np.array([0.0, 0.0, 1.0]), direction)
+    axis_length = float(np.linalg.norm(axis))
+    if axis_length > 1e-8:
+        axis /= axis_length
+        angle = math.acos(float(np.clip(direction[2], -1.0, 1.0)))
+        mesh.rotate(
+            o3d.geometry.get_rotation_matrix_from_axis_angle(axis * angle),
+            center=(0.0, 0.0, 0.0),
+        )
+    elif direction[2] < 0:
+        mesh.rotate(
+            o3d.geometry.get_rotation_matrix_from_xyz((math.pi, 0.0, 0.0)),
+            center=(0.0, 0.0, 0.0),
+        )
+    mesh.translate((start + end) / 2)
+    return _paint(mesh, color)
+
+
+def _orient_horizontal_surface(mesh, upward=True):
+    """Give horizontal PBR surfaces a predictable front face and tangent basis."""
+    vertices = np.asarray(mesh.vertices)
+    triangles = np.asarray(mesh.triangles)
+    if len(vertices) == 0 or len(triangles) == 0:
+        return mesh
+    points = vertices[triangles]
+    signed_z = float(np.sum(np.cross(
+        points[:, 1] - points[:, 0],
+        points[:, 2] - points[:, 0],
+    )[:, 2]))
+    should_flip = (upward and signed_z < 0) or (not upward and signed_z > 0)
+    if should_flip:
+        mesh.triangles = o3d.utility.Vector3iVector(
+            np.ascontiguousarray(triangles[:, [0, 2, 1]])
+        )
+        if mesh.has_triangle_uvs():
+            uvs = np.asarray(mesh.triangle_uvs).reshape((-1, 3, 2))
+            mesh.triangle_uvs = o3d.utility.Vector2dVector(
+                np.ascontiguousarray(uvs[:, [0, 2, 1], :].reshape((-1, 2)))
+            )
+    mesh.compute_vertex_normals()
+    return mesh
+
+
 def _sph(r, color, cx=0.0, cy=0.0, z=0.0):
     m = o3d.geometry.TriangleMesh.create_sphere(radius=r, resolution=14)
     m.translate((cx, cy, z))
@@ -665,17 +730,28 @@ def build_coffee_table(P, w=1.1, d=0.6):
 
 
 def build_rug(P, w=2.6, d=1.8, design="plain woven"):
-    """Build a real low-pile rug geometry in the selected coordinated design."""
+    """Build one low-profile rounded rug without overlapping slab layers."""
     design = str(design or "plain woven").lower()
-    base = _bx(w, d, 0.018, P["rug"])
+    radius = min(0.14, w * 0.08, d * 0.12)
+    rounded = shp_box(
+        -w / 2 + radius,
+        -d / 2 + radius,
+        w / 2 - radius,
+        d / 2 - radius,
+    ).buffer(radius, resolution=6)
+    base = _orient_horizontal_surface(
+        floor_mesh(list(rounded.exterior.coords)[:-1], P["rug"]),
+        upward=True,
+    )
+    base.translate((0.0, 0.0, 0.014))
     apply_archviz_material(
         base, "carpet", tint=P["rug"], tint_strength=0.48, repeat_m=0.85
     )
     meshes = [base]
 
-    def rug_layer(width, depth, color, cx=0.0, cy=0.0, z=0.017):
+    def rug_layer(width, depth, color, cx=0.0, cy=0.0, z=0.015):
         layer = _bx(
-            max(0.04, width), max(0.04, depth), 0.010,
+            max(0.025, width), max(0.025, depth), 0.003,
             color, cx=cx, cy=cy, z=z,
         )
         apply_archviz_material(
@@ -684,24 +760,33 @@ def build_rug(P, w=2.6, d=1.8, design="plain woven"):
         meshes.append(layer)
 
     if design == "bordered":
-        rug_layer(w - 0.18, d - 0.18, _shade(P["rug"], 1.08))
-        rug_layer(w - 0.34, d - 0.34, P["rug"], z=0.026)
+        border = 0.065
+        border_color = _mix_color(P["rug"], P["accent"], 0.28)
+        rug_layer(w - 0.18, border, border_color, cy=d / 2 - 0.10)
+        rug_layer(w - 0.18, border, border_color, cy=-d / 2 + 0.10)
+        rug_layer(border, d - 0.31, border_color, cx=w / 2 - 0.10)
+        rug_layer(border, d - 0.31, border_color, cx=-w / 2 + 0.10)
     elif design == "geometric":
         accent = _mix_color(P["rug"], P["accent"], 0.58)
         stripe = max(0.055, min(0.12, w * 0.045))
         for fraction in (-0.28, 0.0, 0.28):
             rug_layer(stripe, d - 0.12, accent, cx=w * fraction)
-        rug_layer(w - 0.14, stripe, _shade(accent, 0.88), cy=d * 0.24, z=0.026)
-        rug_layer(w - 0.14, stripe, _shade(accent, 0.88), cy=-d * 0.24, z=0.026)
+        rug_layer(
+            w - 0.14, stripe, _shade(accent, 0.88), cy=d * 0.24, z=0.019
+        )
+        rug_layer(
+            w - 0.14, stripe, _shade(accent, 0.88), cy=-d * 0.24, z=0.019
+        )
     elif design == "vintage pattern":
         border = _mix_color(P["rug"], P["accent"], 0.64)
-        rug_layer(w - 0.16, d - 0.16, border)
-        rug_layer(w - 0.30, d - 0.30, _shade(P["rug"], 1.10), z=0.026)
-        rug_layer(w * 0.42, d * 0.18, border, z=0.035)
-        rug_layer(w * 0.18, d * 0.42, border, z=0.035)
+        line = 0.055
+        rug_layer(w - 0.18, line, border, cy=d / 2 - 0.10)
+        rug_layer(w - 0.18, line, border, cy=-d / 2 + 0.10)
+        rug_layer(line, d - 0.31, border, cx=w / 2 - 0.10)
+        rug_layer(line, d - 0.31, border, cx=-w / 2 + 0.10)
+        rug_layer(w * 0.38, d * 0.12, border, z=0.019)
+        rug_layer(w * 0.12, d * 0.38, border, z=0.019)
     else:
-        # Fine end bands make the plain woven option read as a textile instead
-        # of the previous generic rectangular slab.
         band = _shade(P["rug"], 0.90)
         rug_layer(w - 0.10, 0.035, band, cy=d / 2 - 0.07)
         rug_layer(w - 0.10, 0.035, band, cy=-d / 2 + 0.07)
@@ -1058,10 +1143,8 @@ def _professional_detail(asset_key, P, w, d, h, z=0.0):
 
 
 def _textured_art_canvas(w, h, z0):
-    """Tessellate the generated artwork so its full texture survives Open3D."""
+    """Map the full local artwork texture onto a real inset canvas."""
     try:
-        from PIL import Image
-
         path = os.path.join(
             os.path.dirname(__file__),
             "assets",
@@ -1070,38 +1153,35 @@ def _textured_art_canvas(w, h, z0):
             "custom_wall_art",
             "abstract_earth_sage.png",
         )
-        image = Image.open(path).convert("RGB").resize(
-            (40, 40), Image.Resampling.LANCZOS
-        )
-        pixels = np.asarray(image, dtype=float) / 255.0
-        rows, cols = pixels.shape[:2]
+        image = o3d.io.read_image(path)
+        if np.asarray(image).size == 0:
+            return None
         canvas_w, canvas_h = w * 0.86, h * 0.82
-        vertices = []
-        colors = []
-        for row in range(rows):
-            z = z0 + h * 0.09 + canvas_h * row / (rows - 1)
-            for col in range(cols):
-                x = -canvas_w / 2 + canvas_w * col / (cols - 1)
-                vertices.append((x, 0.056, z))
-                colors.append(pixels[rows - 1 - row, col])
-        faces = []
-        for row in range(rows - 1):
-            for col in range(cols - 1):
-                a = row * cols + col
-                b = a + 1
-                c = a + cols
-                d = c + 1
-                faces.extend(((a, c, b), (b, c, d)))
-        mesh = o3d.geometry.TriangleMesh()
-        mesh.vertices = o3d.utility.Vector3dVector(
-            np.asarray(vertices, dtype=float)
+        x0, x1 = -canvas_w / 2, canvas_w / 2
+        z1, z2 = z0 + h * 0.09, z0 + h * 0.09 + canvas_h
+        mesh = o3d.geometry.TriangleMesh(
+            o3d.utility.Vector3dVector(np.asarray([
+                (x0, 0.056, z1),
+                (x1, 0.056, z1),
+                (x1, 0.056, z2),
+                (x0, 0.056, z2),
+            ], dtype=float)),
+            o3d.utility.Vector3iVector(np.asarray([
+                (0, 2, 1),
+                (0, 3, 2),
+            ], dtype=np.int32)),
         )
-        mesh.triangles = o3d.utility.Vector3iVector(
-            np.asarray(faces, dtype=np.int32)
+        mesh.triangle_uvs = o3d.utility.Vector2dVector(
+            np.asarray([
+                (0.0, 1.0), (1.0, 0.0), (1.0, 1.0),
+                (0.0, 1.0), (0.0, 0.0), (1.0, 0.0),
+            ], dtype=float)
         )
-        mesh.vertex_colors = o3d.utility.Vector3dVector(
-            np.asarray(colors, dtype=float)
+        mesh.triangle_material_ids = o3d.utility.IntVector(
+            np.zeros(2, dtype=np.int32)
         )
+        mesh.textures = [image]
+        mesh.paint_uniform_color([1.0, 1.0, 1.0])
         mesh.compute_vertex_normals()
         return mesh
     except Exception as exc:
@@ -1126,11 +1206,26 @@ def build_plant(P, tall=True):
 
 
 def build_floor_lamp(P):
-    return [
-        _cyl(0.16, 0.02, P["metal"]),
-        _cyl(0.018, 1.45, P["metal"], z=0.02),
-        _cyl(0.17, 0.26, P["shade"], z=1.42),
-    ], 0.4, 0.4
+    """Slim arched reading lamp with a coordinated dark-bronze frame."""
+    frame = _mix_color(P["metal"], [0.14, 0.13, 0.12], 0.68)
+    meshes = [_cyl(0.18, 0.025, frame)]
+    points = (
+        (0.0, 0.0, 0.025),
+        (0.0, 0.0, 1.28),
+        (0.0, 0.08, 1.53),
+        (0.0, 0.25, 1.66),
+        (0.0, 0.40, 1.68),
+    )
+    for start, end in zip(points, points[1:]):
+        section = _cylinder_between(start, end, 0.014, frame, resolution=18)
+        if section is not None:
+            meshes.append(section)
+    shade = _mix_color(P["shade"], WHITE_SOFT, 0.35)
+    meshes.extend([
+        _cyl(0.21, 0.23, shade, cy=0.40, z=1.44, res=36),
+        _sph(0.055, [1.0, 0.84, 0.57], cy=0.40, z=1.50),
+    ])
+    return meshes, 0.5, 0.65
 
 
 def build_art(P, w=1.25, h=0.85, z0=1.25):
@@ -1400,7 +1495,7 @@ def _door_frame(op1, op2, wall_angle):
             bar(-0.02, L + 0.02, DOOR_HEIGHT - 0.03, DOOR_HEIGHT + 0.07)]
 
 
-def build_walls(edges, wall_color, material_name="plaster"):
+def build_walls(edges, wall_color, material_name=None):
     """Wall meshes with door/window cutouts, at walkthrough wall height.
 
     Wall pieces that end at a polygon corner are extended slightly so
@@ -1454,7 +1549,23 @@ def build_walls(edges, wall_color, material_name="plaster"):
                 w = wall_segment(op1, op2, WINDOW_SILL + WINDOW_HEIGHT, WALL_H,
                                  wall_color)
                 add_wall(w)
-                meshes.extend(create_window_geometry(op1, op2, wall_angle))
+                for window_mesh in create_window_geometry(
+                    op1, op2, wall_angle
+                ):
+                    vertices = np.asarray(window_mesh.vertices)
+                    # plan3d's legacy renderer fakes sunlight with a large
+                    # cream trapezoid laid over the floor. Under PBR it reads
+                    # as a badly fitted rug and overlaps the real carpets.
+                    # Keep the modeled glass, reveals and frame; real scene
+                    # lighting supplies the daylight in the walkthrough.
+                    is_fake_floor_spill = (
+                        len(vertices)
+                        and float(vertices[:, 2].max()) <= 0.02
+                        and float(vertices[:, 2].min()) >= -0.001
+                        and len(vertices) <= 4
+                    )
+                    if not is_fake_floor_spill:
+                        meshes.append(window_mesh)
             last = t1
         if (1.0 - last) * length > 0.02:        # absolute 2 cm, not 1% of edge
             w = seg(p1 + (p2 - p1) * last, p2, 0, WALL_H,
@@ -1464,12 +1575,13 @@ def build_walls(edges, wall_color, material_name="plaster"):
         combined = wall_meshes[0]
         for part in wall_meshes[1:]:
             combined += part
-        apply_archviz_material(
-            combined,
-            material_name,
-            tint=wall_color,
-            tint_strength=0.32 if material_name != "wallpaper" else 0.18,
-        )
+        if material_name:
+            apply_archviz_material(
+                combined,
+                material_name,
+                tint=wall_color,
+                tint_strength=0.32 if material_name != "wallpaper" else 0.18,
+            )
         meshes.insert(0, combined)
     return meshes
 
@@ -1496,42 +1608,175 @@ def _wall_strip(a, b, z0, z1, thick, color, inward, offset):
     return _paint(m, color)
 
 
+def build_wall_finish_skins(room_m, edges, wall_color, material_name):
+    """Apply each room's wall finish only to its own interior wall face.
+
+    Structural walls are shared by adjacent rooms. Mapping a bathroom tile
+    texture around the whole structural box made that tile appear on the
+    living-room side too. These thin opening-aware skins give both sides of a
+    shared wall independent, correctly selected finishes.
+    """
+    poly = Polygon([(p[0], p[1]) for p in room_m])
+    if not poly.is_valid:
+        poly = poly.buffer(0)
+    meshes = []
+    tint_strength = {
+        "wallpaper": 0.14,
+        "limewash": 0.30,
+        "bathroom_tile": 0.20,
+        "concrete": 0.18,
+    }.get(material_name, 0.30)
+    surface_material = (
+        "marble"
+        if material_name == "bathroom_tile"
+        else material_name
+    )
+
+    for edge in edges:
+        p1 = np.asarray(edge["p1"], dtype=float)
+        p2 = np.asarray(edge["p2"], dtype=float)
+        length = float(edge["length"])
+        if length < 0.10:
+            continue
+        direction = (p2 - p1) / length
+        normal = np.array([-direction[1], direction[0]])
+        middle = (p1 + p2) / 2
+        inward = (
+            normal
+            if poly.contains(Point(*(middle + normal * 0.25)))
+            else -normal
+        )
+
+        def add_skin(a, b, z0, z1):
+            skin = _wall_strip(
+                a, b, z0, z1, 0.008, wall_color, inward,
+                WALL_THICKNESS / 2 + 0.008,
+            )
+            if skin is None:
+                return
+            apply_archviz_material(
+                skin,
+                surface_material,
+                tint=wall_color,
+                tint_strength=tint_strength,
+                # Bathroom walls use the installed mineral slab map rather
+                # than enlarging a small-mosaic texture into heavy grout.
+                repeat_m=3.2 if material_name == "bathroom_tile" else None,
+                detail_maps=material_name not in {"plaster", "limewash"},
+            )
+            meshes.append(skin)
+
+        last = 0.0
+        for typ, t0, t1 in sorted(
+            edge.get("openings", []), key=lambda opening: opening[1]
+        ):
+            t0 = max(last, min(1.0, max(0.0, float(t0))))
+            t1 = max(t0, min(1.0, max(0.0, float(t1))))
+            if (t0 - last) * length > 0.018:
+                add_skin(
+                    p1 + (p2 - p1) * last,
+                    p1 + (p2 - p1) * t0,
+                    0.0,
+                    WALL_H,
+                )
+            opening_a = p1 + (p2 - p1) * t0
+            opening_b = p1 + (p2 - p1) * t1
+            if typ in ("door", "door_hole"):
+                add_skin(opening_a, opening_b, DOOR_HEIGHT, WALL_H)
+            else:
+                add_skin(opening_a, opening_b, 0.0, WINDOW_SILL)
+                add_skin(
+                    opening_a,
+                    opening_b,
+                    WINDOW_SILL + WINDOW_HEIGHT,
+                    WALL_H,
+                )
+            last = t1
+        if (1.0 - last) * length > 0.018:
+            add_skin(
+                p1 + (p2 - p1) * last,
+                p2,
+                0.0,
+                WALL_H,
+            )
+    return meshes
+
+
 def _pleated_curtain_panel(
     a, b, z0, z1, color, inward, offset, tint_strength=0.62
 ):
-    """A real folded fabric surface rather than a flat curtain rectangle."""
+    """Build a gathered, double-sided corrugated fabric panel."""
     a, b = np.asarray(a, dtype=float), np.asarray(b, dtype=float)
     width = float(np.linalg.norm(b - a))
     if width < 0.08:
         return None
     direction = (b - a) / width
-    segments = max(12, int(math.ceil(width / 0.055)))
-    rows = 4
+    folds = max(4, int(round(width / 0.11)))
+    columns = folds * 4
+    rows = 6
+    thickness = 0.010
+    amplitude = min(0.065, width / (folds * 2.4))
+    center = (a + b) / 2
     vertices = []
     grid_uv = []
-    for row in range(rows):
-        v = row / (rows - 1)
-        z = z0 + (z1 - z0) * v
-        fullness = 1.12 - 0.18 * v
-        for column in range(segments + 1):
-            u = column / segments
-            point = a + direction * (width * u)
-            fold = math.sin(u * segments * math.pi) * 0.045 * fullness
-            point = point + inward * (offset + fold)
-            vertices.append((point[0], point[1], z))
-            grid_uv.append((u * max(width / 0.42, 1.0), v * (z1 - z0) / 0.42))
+    for surface in (1.0, -1.0):
+        for row in range(rows):
+            v = row / (rows - 1)
+            z = z0 + (z1 - z0) * v
+            gathered_width = width * (0.86 + 0.14 * v)
+            fullness = 0.92 + 0.12 * v
+            for column in range(columns + 1):
+                u = column / columns
+                along = direction * ((u - 0.5) * gathered_width)
+                fold = (
+                    math.sin(u * folds * math.tau)
+                    * amplitude
+                    * fullness
+                )
+                point = (
+                    center
+                    + along
+                    + inward * (offset + fold + surface * thickness / 2)
+                )
+                vertices.append((point[0], point[1], z))
+                grid_uv.append(
+                    (u * max(width / 0.42, 1.0), v * (z1 - z0) / 0.42)
+                )
 
     triangles = []
     triangle_uvs = []
-    for row in range(rows - 1):
-        for column in range(segments):
-            p0 = row * (segments + 1) + column
-            p1 = p0 + 1
-            p2 = p0 + segments + 1
-            p3 = p2 + 1
-            for tri in ((p0, p2, p1), (p1, p2, p3)):
-                triangles.append(tri)
-                triangle_uvs.extend(grid_uv[index] for index in tri)
+    surface_size = rows * (columns + 1)
+    for surface_index in range(2):
+        base = surface_index * surface_size
+        for row in range(rows - 1):
+            for column in range(columns):
+                p0 = base + row * (columns + 1) + column
+                p1 = p0 + 1
+                p2 = p0 + columns + 1
+                p3 = p2 + 1
+                faces = (
+                    ((p0, p2, p1), (p1, p2, p3))
+                    if surface_index == 0
+                    else ((p0, p1, p2), (p1, p3, p2))
+                )
+                for triangle in faces:
+                    triangles.append(triangle)
+                    triangle_uvs.extend(grid_uv[index] for index in triangle)
+
+    # Close both side hems so the panel reads as fabric volume from oblique
+    # walkthrough angles instead of disappearing like a one-sided plane.
+    for column in (0, columns):
+        for row in range(rows - 1):
+            front0 = row * (columns + 1) + column
+            front1 = (row + 1) * (columns + 1) + column
+            back0 = surface_size + front0
+            back1 = surface_size + front1
+            for triangle in (
+                (front0, back0, front1),
+                (front1, back0, back1),
+            ):
+                triangles.append(triangle)
+                triangle_uvs.extend(grid_uv[index] for index in triangle)
 
     mesh = o3d.geometry.TriangleMesh()
     mesh.vertices = o3d.utility.Vector3dVector(np.asarray(vertices, dtype=float))
@@ -1602,21 +1847,43 @@ def build_room_trim(room_m, edges, P, config=None):
             wb = p1 + (p2 - p1) * t1
             wwidth = float(np.linalg.norm(wb - wa))
             top = WINDOW_SILL + WINDOW_HEIGHT + 0.22
-            # A single rod for sheers/linen, double projection for a layered
-            # hotel-style treatment.
-            rod = _wall_strip(wa - dvec * 0.12, wb + dvec * 0.12,
-                              top - 0.02, top + 0.02, 0.03, P["metal"],
-                              inward, off + 0.10)
+            rod_color = _mix_color(
+                P["metal"], [0.18, 0.16, 0.14], 0.58
+            )
+            rod_a_2d = wa - dvec * 0.14 + inward * (off + 0.10)
+            rod_b_2d = wb + dvec * 0.14 + inward * (off + 0.10)
+            rod = _cylinder_between(
+                (rod_a_2d[0], rod_a_2d[1], top),
+                (rod_b_2d[0], rod_b_2d[1], top),
+                0.016,
+                rod_color,
+                resolution=18,
+            )
             if rod:
                 meshes.append(rod)
+                for point in (rod_a_2d, rod_b_2d):
+                    finial = _sph(
+                        0.028, rod_color,
+                        cx=point[0], cy=point[1], z=top,
+                    )
+                    meshes.append(finial)
             if curtain_design in ("sheer panels", "layered sheers + drapes"):
                 sheer = _mix_color(WHITE_SOFT, P["shade"], 0.18)
-                panel = _pleated_curtain_panel(
-                    wa, wb, 0.16, top, sheer, inward, off + 0.065,
-                    tint_strength=0.24,
+                sheer_spans = (
+                    ((wa, wb),)
+                    if curtain_design == "layered sheers + drapes"
+                    else (
+                        (wa, wa + (wb - wa) * 0.48),
+                        (wa + (wb - wa) * 0.52, wb),
+                    )
                 )
-                if panel:
-                    meshes.append(panel)
+                for sheer_a, sheer_b in sheer_spans:
+                    panel = _pleated_curtain_panel(
+                        sheer_a, sheer_b, 0.10, top, sheer, inward,
+                        off + 0.065, tint_strength=0.20,
+                    )
+                    if panel:
+                        meshes.append(panel)
             if curtain_design in ("linen drapes", "layered sheers + drapes"):
                 panel_w = max(0.20, wwidth * (
                     0.30 if curtain_design == "layered sheers + drapes" else 0.25
@@ -1907,7 +2174,13 @@ def build_room_design_surfaces(room_m, edges, P, config):
         coords = list(part.exterior.coords)[:-1]
         if len(coords) < 3:
             continue
-        tray = floor_mesh(coords, _mix_color(CEILING_COLOR, ceiling_color, 0.35))
+        tray = _orient_horizontal_surface(
+            floor_mesh(
+                coords,
+                _mix_color(CEILING_COLOR, ceiling_color, 0.35),
+            ),
+            upward=False,
+        )
         tray.translate((0, 0, WALL_H - 0.045))
         meshes.append(tray)
 
@@ -2119,6 +2392,40 @@ class RoomFurnisher:
     @property
     def wants_wall_decor(self):
         return self.design_choices["decor_set"] != "minimal"
+
+    def place_rug(self, position, yaw, width, depth):
+        """Fit one rug fully inside its room and away from doorway clear zones."""
+        if not self.wants_rugs:
+            return False
+        safe_room = self.poly.buffer(-0.14)
+        if safe_room.is_empty:
+            return False
+        position = np.asarray(position, dtype=float)
+        scale = 1.0
+        while scale >= 0.58:
+            fitted_w = width * scale
+            fitted_d = depth * scale
+            footprint = footprint_poly(position, yaw, fitted_w, fitted_d)
+            clears_doors = not any(
+                footprint.intersects(zone.buffer(0.08))
+                for zone in self.door_zones
+            )
+            if footprint.within(safe_room) and clears_doors:
+                return self.add(
+                    build_rug(
+                        self.P,
+                        w=fitted_w,
+                        d=fitted_d,
+                        design=self.rug_design,
+                    ),
+                    position,
+                    yaw,
+                    block=False,
+                    avoid_doors=False,
+                    check=False,
+                )
+            scale -= 0.08
+        return False
 
     def furniture_builder(self, asset_key, procedural_builder):
         """Load a native catalog model, with Tripo kept for compatibility."""
@@ -2497,11 +2804,7 @@ class RoomFurnisher:
         if sofa:
             n, s = sofa["n"], sofa["s"]
             rug_pos = np.array(sofa["pos"]) + n * 1.55
-            rug = build_rug(self.P, design=self.rug_design)
-            if (self.wants_rugs and
-                    footprint_poly(rug_pos, sofa["yaw"], rug[1], rug[2]).within(self.inset)):
-                self.add(rug, rug_pos, sofa["yaw"], block=False,
-                         avoid_doors=False, check=False)
+            self.place_rug(rug_pos, sofa["yaw"], 2.6, 1.8)
             self.add(table_builder(self.P),
                      np.array(sofa["pos"]) + n * 1.5, sofa["yaw"])
             # armchair beside the rug, angled toward the table. The seeded
@@ -2562,12 +2865,7 @@ class RoomFurnisher:
                           + n * (WALL_GAP + ns[2] / 2))
                 self.add(ns, ns_pos, yaw)
             rug_pos = np.array(bed["pos"]) + n * (bed["d"] / 2 - 0.4)
-            if self.wants_rugs:
-                self.add(build_rug(
-                    self.P, w=bed["w"] + 1.2, d=1.6,
-                    design=self.rug_design,
-                ), rug_pos, yaw,
-                         block=False, avoid_doors=False, check=False)
+            self.place_rug(rug_pos, yaw, bed["w"] + 1.2, 1.6)
             if self.airy:
                 self.art_on(bed, w=1.1)
             else:
@@ -2641,6 +2939,7 @@ class RoomFurnisher:
         yaw = yaw_facing(slots[0]["n"]) if slots else 0.0
         tbl = table_builder(self.P)
         if self.add(tbl, self.centroid, yaw):
+            self.place_rug(self.centroid, yaw, 2.8, 2.2)
             s = np.array([math.cos(yaw), math.sin(yaw)])
             n = np.array([-s[1], s[0]])
             for side in (-1, 1):
@@ -2759,23 +3058,17 @@ class RoomFurnisher:
             toilet_builder, slots=slots, w=0.38, d=0.58
         )
         self.against_wall(build_towel_rail, slots=slots, block=False)
-        if self.wants_rugs:
-            self.add(
-                build_rug(
-                    self.P, w=0.85, d=0.55, design=self.rug_design
-                ),
-                self.centroid, 0.0, block=False, avoid_doors=False,
-            )
+        mat_position = (
+            np.asarray(v["pos"]) + v["n"] * (v["d"] / 2 + 0.42)
+            if v
+            else self.centroid
+        )
+        self.place_rug(mat_position, v["yaw"] if v else 0.0, 0.85, 0.55)
         if self.wants_plants:
             self.in_corner(build_plant, tall=False)
         self.pendant()
 
     def furnish_generic(self):
-        if self.wants_rugs:
-            self.add(build_rug(
-                self.P, 2.0, 1.4, design=self.rug_design
-            ), self.centroid, 0.0,
-                     block=False, avoid_doors=False, check=False)
         if self.wants_plants:
             self.in_corner(build_plant)
         self.against_wall(build_console_table)
@@ -2863,22 +3156,44 @@ def build_scene(rooms_px, doors_px, windows_px, px_per_m=None, room_configs=None
         room_polys.append(poly)
 
         # floor + ceiling in the room's style
-        floor = floor_mesh(room, P["floor"])
+        floor = _orient_horizontal_surface(
+            floor_mesh(room, P["floor"]),
+            upward=True,
+        )
+        selected_floor_material = floor_material(cfg, rtype, style)
+        minx, miny, maxx, maxy = poly.bounds
         apply_archviz_material(
             floor,
-            floor_material(cfg, rtype, style),
+            selected_floor_material,
             tint=P["floor"],
-            tint_strength=0.16,
+            tint_strength=(
+                0.30
+                if selected_floor_material == "bathroom_tile"
+                else 0.16
+            ),
+            # Keep UVs inside one authored texture tile in the PBR renderer;
+            # the source maps already contain a complete board/tile layout.
+            repeat_m=max(maxx - minx, maxy - miny, 1.0),
+            # The tile normal map can expose the room's two triangulation
+            # faces under strong indirect light. Its albedo and calibrated
+            # roughness retain the realistic surface without those facets.
+            detail_maps=selected_floor_material != "bathroom_tile",
         )
         meshes.append(floor)
-        ceil = floor_mesh(room, P.get("ceiling", CEILING_COLOR))
+        ceil = _orient_horizontal_surface(
+            floor_mesh(room, P.get("ceiling", CEILING_COLOR)),
+            upward=False,
+        )
         ceil.translate((0, 0, WALL_H))
         meshes.append(ceil)
 
-        meshes.extend(build_walls(
+        selected_wall_material = wall_material(cfg, rtype, style)
+        meshes.extend(build_walls(all_edges[i], P["wall"]))
+        meshes.extend(build_wall_finish_skins(
+            room,
             all_edges[i],
             P["wall"],
-            wall_material(cfg, rtype, style),
+            selected_wall_material,
         ))
         meshes.extend(build_room_trim(room, all_edges[i], P, cfg))
         if cfg.get("whole_room_design", True):
@@ -2900,10 +3215,16 @@ def build_scene(rooms_px, doors_px, windows_px, px_per_m=None, room_configs=None
     # between rooms show as dark shadow lines, never open sky ----
     hull = unary_union(room_polys).convex_hull.buffer(0.35)
     hull_pts = [(x, y) for x, y in list(hull.exterior.coords)[:-1]]
-    cap = floor_mesh(hull_pts, CEILING_COLOR)
+    cap = _orient_horizontal_surface(
+        floor_mesh(hull_pts, CEILING_COLOR),
+        upward=True,
+    )
     cap.translate((0, 0, WALL_H + 0.02))
     meshes.append(cap)
-    base = floor_mesh(hull_pts, [0.40, 0.35, 0.30])
+    base = _orient_horizontal_surface(
+        floor_mesh(hull_pts, [0.40, 0.35, 0.30]),
+        upward=False,
+    )
     base.translate((0, 0, -0.01))
     meshes.append(base)
 
