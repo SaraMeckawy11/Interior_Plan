@@ -1391,7 +1391,8 @@ def open_walkthrough_dialog():
     ttk.Combobox(
         global_card, textvariable=wall_var,
         values=["Auto by style", "Warm paint", "Cool paint", "Limewash",
-                "Wood slats", "Panel moulding", "Concrete", "Accent color"],
+                "Wallpaper", "Wood slats", "Panel moulding", "Concrete",
+                "Accent color"],
         width=28, state="readonly", font=("Segoe UI", 9),
     ).grid(row=5, column=1, padx=(0, 12), pady=(0, 11), sticky="ew")
     global_card.grid_columnconfigure(1, weight=1)
