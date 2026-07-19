@@ -70,8 +70,11 @@ DEFAULT_MODELS = {
     "wardrobe": "pro/drawer_cabinet/drawer_cabinet_1k.gltf",
     "kitchen_island": "kitchenBar.glb",
     "fridge": "kitchenFridgeLarge.glb",
-    "dining_table": "pro/dining_table/dining_table_1k.gltf",
-    "dining_chair": "pro/dining_chair_02/dining_chair_02_1k.gltf",
+    # The catalog dining table includes a permanently modeled plaid cloth
+    # that cannot follow the user's palette. The walkthrough's clean PBR
+    # timber table is true editable geometry and is used instead.
+    "dining_table": None,
+    "dining_chair": "pro/sheen_chair/SheenChair.glb",
     "sideboard": "pro/modern_wooden_cabinet/modern_wooden_cabinet_1k.gltf",
     "desk": "pro/metal_office_desk/metal_office_desk_1k.gltf",
     "office_chair": (
@@ -82,7 +85,7 @@ DEFAULT_MODELS = {
         "wooden_display_shelves_01_1k.gltf"
     ),
     "vanity": "bathroomSinkSquare.glb",
-    "toilet": "toilet.glb",
+    "toilet": None,
     "shower": "shower.glb",
     "bathtub": "bathtub.glb",
     "plant": "pro/potted_plant_01/potted_plant_01_1k.gltf",
@@ -104,10 +107,12 @@ DEFAULT_MODELS = {
 
 MODERN_MODELS = {
     "sofa": "pro/glam_velvet_sofa/GlamVelvetSofa.glb",
-    "armchair": "pro/modern_arm_chair_01/modern_arm_chair_01_1k.gltf",
+    "armchair": "pro/sheen_chair/SheenChair.glb",
     "coffee_table": "pro/modern_coffee_table_01/modern_coffee_table_01_1k.gltf",
     "tv_unit": "pro/modern_wooden_cabinet/modern_wooden_cabinet_1k.gltf",
     "sideboard": "pro/modern_wooden_cabinet/modern_wooden_cabinet_1k.gltf",
+    "dining_table": None,
+    "dining_chair": "pro/sheen_chair/SheenChair.glb",
 }
 
 BOHO_MODELS = {
@@ -124,10 +129,14 @@ BOHO_MODELS = {
     ),
     "wardrobe": "pro/drawer_cabinet/drawer_cabinet_1k.gltf",
     "bed": None,
+    "dining_table": None,
+    "dining_chair": "pro/sheen_chair/SheenChair.glb",
 }
 
 CLASSIC_MODELS = {
-    "sofa": "pro/Sofa_01/Sofa_01_1k.gltf",
+    "sofa": (
+        "pro/sheen_wood_leather_sofa/SheenWoodLeatherSofa.glb"
+    ),
     "armchair": "pro/ArmChair_01/ArmChair_01_1k.gltf",
     "coffee_table": "pro/CoffeeTable_01/CoffeeTable_01_1k.gltf",
     "tv_unit": "pro/ClassicConsole_01/ClassicConsole_01_1k.gltf",
@@ -136,6 +145,8 @@ CLASSIC_MODELS = {
         "pro/ClassicNightstand_01/ClassicNightstand_01_1k.gltf"
     ),
     "wardrobe": "pro/GothicCabinet_01/GothicCabinet_01_1k.gltf",
+    "dining_table": None,
+    "dining_chair": "pro/dining_chair_02/dining_chair_02_1k.gltf",
 }
 
 MODERN_STYLE_WORDS = {
@@ -356,9 +367,17 @@ def catalog_material_record_for_mesh(mesh):
 
 def catalog_status() -> tuple[bool, str]:
     """Return whether every required native model is installed."""
-    required = set(DEFAULT_MODELS.values())
-    required.update(MODERN_MODELS.values())
-    required.update(CLASSIC_MODELS.values())
+    required = {
+        name
+        for mapping in (
+            DEFAULT_MODELS,
+            MODERN_MODELS,
+            BOHO_MODELS,
+            CLASSIC_MODELS,
+        )
+        for name in mapping.values()
+        if name is not None
+    }
     missing = sorted(name for name in required if not (CATALOG_ROOT / name).is_file())
     if missing:
         return False, "Local 3D catalog is missing: " + ", ".join(missing)
