@@ -1407,7 +1407,7 @@ def open_walkthrough_dialog():
         catalog_ready, catalog_reason = False, f"3D catalog is unavailable: {exc}"
     engine_values = []
     if catalog_ready:
-        engine_values.append("Local 3D catalog - real editable furniture")
+        engine_values.append("Professional local 3D catalog - editable")
     engine_values.append("Procedural - instant fallback")
     engine_var = tk.StringVar(value=engine_values[0])
     tk.Label(engine_card, text="AUTOMATIC DESIGNER STAGING", font=("Segoe UI", 8, "bold"),
@@ -1419,9 +1419,10 @@ def open_walkthrough_dialog():
     ).grid(row=1, column=0, sticky="w", padx=10, pady=(0, 4))
     tk.Label(
         engine_card,
-        text=(catalog_reason + " These are native game-model components, not "
-              "image reconstructions. The app stages the complete composition "
-              "automatically; in the walkthrough use TAB to select furniture "
+        text=(catalog_reason + " Production-authored textured meshes are "
+              "stored in assets/furniture_catalog/pro; they are not image "
+              "reconstructions. The app stages the complete composition "
+              "automatically. In the walkthrough use TAB to select furniture "
               "and [ or ] to rotate its direction."),
         font=("Segoe UI", 9), bg=SURFACE,
         fg=SUCCESS_COLOR if catalog_ready else TEXT_MUTED,
@@ -1432,7 +1433,7 @@ def open_walkthrough_dialog():
     def launch(only_room=None):
         configs, rooms = [], []
         variation = "preference-render-v3"
-        use_catalog = engine_var.get().startswith("Local 3D catalog")
+        use_catalog = engine_var.get().startswith("Professional local 3D catalog")
         for name, tvar, svar in room_vars:
             if only_room and name != only_room:
                 continue

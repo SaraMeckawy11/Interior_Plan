@@ -6,14 +6,17 @@ The application turns a measured 2D floor plan into a furnished, first-person
 ## Preference-driven 3D walkthrough
 
 The walkthrough is generated directly from the measured floor plan. The
-procedural furniture engine is the instant, stable default. An optional local
-TripoSR mode reconstructs primary furniture as AI-generated 3D meshes and
-reuses them from the local cache, without a paid cloud service.
+default engine uses a curated local catalog of production-authored, textured
+3D furniture. The professional catalog is stored in
+`assets/furniture_catalog/pro`; compact kitchen and bathroom fallbacks are
+stored directly in `assets/furniture_catalog`. The assets are native meshes,
+not screenshots, furniture render planes, or image-to-3D reconstructions.
 
-For a new design direction, the local image model first creates isolated
-furniture references and TripoSR converts them to GLB meshes. The cache key
-includes the style, design profile, color mood, personal brief, floor finish,
-and wall finish, so different user preferences do not share the wrong assets.
+The professional subset comes from Poly Haven under CC0. It includes sofas,
+armchairs, tables, cabinetry, bedroom and office pieces, plants, lighting,
+mirrors, framed wall art, clocks, cushions, and decorative objects. A compact
+CC0 Kenney subset supplies fixture categories not present in the open
+professional library. See the catalog README and license files for details.
 
 The setup dialog controls the complete room direction:
 
@@ -24,13 +27,11 @@ The setup dialog controls the complete room direction:
 - wall treatments such as paint, limewash, timber slats, moulding, or concrete.
 
 The renderer applies those choices to floors, focal walls, ceiling coves,
-recessed lighting, sconces, curtains, coordinated furniture, rugs, artwork,
-mirrors, plants, and room-specific decoration. Walls, doors, and windows remain
-authoritative from the floor plan. TripoSR reconstructs suitable soft furniture
-as real geometry, then the renderer replaces its image-projected colors with
-coordinated 3D materials. Precise tables, cabinetry, appliances, and fixtures
-use clean native geometry. The whole-room layout, scale, finishes, lighting,
-decor, collision, and circulation remain controlled by the same coordinated
-design engine.
+recessed lighting, modeled sconces, curtains, coordinated furniture, rugs,
+textured framed artwork, mirrors, plants, and room-specific decoration. Walls,
+doors, and windows remain authoritative from the floor plan. The whole-room
+layout engine places the wet fixture first in every bathroom, then stages the
+vanity and toilet around safe circulation. Furniture remains selectable and
+rotatable in the walkthrough.
 
 Run the desktop application with `run_app.bat`.

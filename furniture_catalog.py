@@ -1,11 +1,14 @@
-"""Clean local 3D furniture catalog for the walkthrough.
+"""Local professional 3D furniture and decoration catalog.
 
-Unlike image-to-3D reconstruction, these assets were authored as native game
-geometry.  Every model has a stable local axis, pivot and measurable footprint,
-so it can be positioned and rotated without carrying an image projection.
+The preferred assets are textured, production-authored Poly Haven models.  A
+small Kenney set remains as a compact fallback for kitchen and bathroom
+fixtures that Poly Haven does not currently provide.  Every model is native 3D
+geometry with a stable pivot and measurable footprint; no furniture image
+planes or screenshot projections are used.
 
-Source: Kenney Furniture Kit 2.0 (CC0)
-https://kenney.nl/assets/furniture-kit
+Sources:
+https://polyhaven.com/ (CC0)
+https://kenney.nl/assets/furniture-kit (CC0)
 """
 
 from __future__ import annotations
@@ -21,6 +24,7 @@ import open3d as o3d
 
 ROOT = Path(__file__).resolve().parent
 CATALOG_ROOT = ROOT / "assets" / "furniture_catalog"
+PRO_ROOT = CATALOG_ROOT / "pro"
 
 MODEL_HEIGHTS = {
     "sofa": 0.90,
@@ -41,41 +45,80 @@ MODEL_HEIGHTS = {
     "vanity": 0.92,
     "toilet": 0.78,
     "shower": 2.05,
+    "bathtub": 0.62,
+    "plant": 1.35,
+    "wall_art": 0.85,
+    "wall_mirror": 0.92,
+    "wall_clock": 0.55,
+    "wall_sconce": 0.46,
+    "ceiling_light": 0.42,
+    "decor_vase": 0.32,
+    "throw_pillows": 0.32,
 }
 
 DEFAULT_MODELS = {
-    "sofa": "loungeSofa.glb",
-    "armchair": "loungeChair.glb",
-    "coffee_table": "tableCoffee.glb",
-    "tv_unit": "cabinetTelevisionDoors.glb",
-    "bed": "bedDouble.glb",
-    "nightstand": "cabinetBedDrawerTable.glb",
-    "wardrobe": "bookcaseClosedWide.glb",
+    "sofa": "pro/sofa_03/sofa_03_1k.gltf",
+    "armchair": "pro/modern_arm_chair_01/modern_arm_chair_01_1k.gltf",
+    "coffee_table": "pro/modern_coffee_table_01/modern_coffee_table_01_1k.gltf",
+    "tv_unit": "pro/modern_wooden_cabinet/modern_wooden_cabinet_1k.gltf",
+    "bed": "pro/GothicBed_01/GothicBed_01_1k.gltf",
+    "nightstand": (
+        "pro/painted_wooden_nightstand/"
+        "painted_wooden_nightstand_1k.gltf"
+    ),
+    "wardrobe": "pro/drawer_cabinet/drawer_cabinet_1k.gltf",
     "kitchen_island": "kitchenBar.glb",
     "fridge": "kitchenFridgeLarge.glb",
-    "dining_table": "table.glb",
-    "dining_chair": "chairCushion.glb",
-    "sideboard": "cabinetTelevisionDoors.glb",
-    "desk": "desk.glb",
-    "office_chair": "chairDesk.glb",
-    "bookshelf": "bookcaseOpen.glb",
+    "dining_table": "pro/dining_table/dining_table_1k.gltf",
+    "dining_chair": "pro/dining_chair_02/dining_chair_02_1k.gltf",
+    "sideboard": "pro/modern_wooden_cabinet/modern_wooden_cabinet_1k.gltf",
+    "desk": "pro/metal_office_desk/metal_office_desk_1k.gltf",
+    "office_chair": (
+        "pro/modern_arm_chair_01/modern_arm_chair_01_1k.gltf"
+    ),
+    "bookshelf": (
+        "pro/wooden_display_shelves_01/"
+        "wooden_display_shelves_01_1k.gltf"
+    ),
     "vanity": "bathroomSinkSquare.glb",
     "toilet": "toilet.glb",
     "shower": "shower.glb",
+    "bathtub": "bathtub.glb",
+    "plant": "pro/potted_plant_01/potted_plant_01_1k.gltf",
+    "wall_art": (
+        "pro/hanging_picture_frame_01/"
+        "hanging_picture_frame_01_1k.gltf"
+    ),
+    "wall_mirror": "pro/ornate_mirror_01/ornate_mirror_01_1k.gltf",
+    "wall_clock": "pro/wall_clock/wall_clock_1k.gltf",
+    "wall_sconce": (
+        "pro/industrial_wall_sconce/industrial_wall_sconce_1k.gltf"
+    ),
+    "ceiling_light": (
+        "pro/modern_ceiling_lamp_01/modern_ceiling_lamp_01_1k.gltf"
+    ),
+    "decor_vase": "pro/ceramic_vase_03/ceramic_vase_03_1k.gltf",
+    "throw_pillows": "pro/throw_pillows_01/throw_pillows_01_1k.gltf",
 }
 
 MODERN_MODELS = {
-    "sofa": "loungeDesignSofa.glb",
-    "armchair": "loungeDesignChair.glb",
-    "coffee_table": "tableCoffeeGlass.glb",
-    "dining_chair": "chairModernFrameCushion.glb",
+    "sofa": "pro/sofa_03/sofa_03_1k.gltf",
+    "armchair": "pro/modern_arm_chair_01/modern_arm_chair_01_1k.gltf",
+    "coffee_table": "pro/modern_coffee_table_01/modern_coffee_table_01_1k.gltf",
+    "tv_unit": "pro/modern_wooden_cabinet/modern_wooden_cabinet_1k.gltf",
+    "sideboard": "pro/modern_wooden_cabinet/modern_wooden_cabinet_1k.gltf",
 }
 
 CLASSIC_MODELS = {
-    "sofa": "loungeSofaLong.glb",
-    "armchair": "loungeChairRelax.glb",
-    "coffee_table": "tableCoffee.glb",
-    "dining_chair": "chairCushion.glb",
+    "sofa": "pro/Sofa_01/Sofa_01_1k.gltf",
+    "armchair": "pro/ArmChair_01/ArmChair_01_1k.gltf",
+    "coffee_table": "pro/CoffeeTable_01/CoffeeTable_01_1k.gltf",
+    "tv_unit": "pro/ClassicConsole_01/ClassicConsole_01_1k.gltf",
+    "sideboard": "pro/ClassicConsole_01/ClassicConsole_01_1k.gltf",
+    "nightstand": (
+        "pro/ClassicNightstand_01/ClassicNightstand_01_1k.gltf"
+    ),
+    "wardrobe": "pro/GothicCabinet_01/GothicCabinet_01_1k.gltf",
 }
 
 MODERN_STYLE_WORDS = {
@@ -138,7 +181,9 @@ def _model_name(asset_key: str, style: str) -> str | None:
 def _palette_material(asset_key, palette):
     if not palette:
         return None
-    if asset_key in {"sofa", "armchair", "office_chair", "bed"}:
+    if asset_key in {
+        "sofa", "armchair", "office_chair", "bed", "throw_pillows",
+    }:
         return np.asarray(palette["sofa"], dtype=float)
     if asset_key in {
         "coffee_table", "tv_unit", "nightstand", "dining_table",
@@ -147,24 +192,35 @@ def _palette_material(asset_key, palette):
         return np.asarray(palette["wood"], dtype=float)
     if asset_key in {"wardrobe", "kitchen_island", "fridge", "vanity"}:
         return np.asarray(palette["cabinet"], dtype=float)
-    if asset_key in {"toilet", "shower"}:
+    if asset_key in {"toilet", "shower", "bathtub"}:
         return np.array([0.92, 0.94, 0.94])
+    if asset_key in {"wall_art", "decor_vase"}:
+        return np.asarray(palette["accent"], dtype=float)
+    if asset_key in {"wall_mirror", "wall_clock", "wall_sconce", "ceiling_light"}:
+        return np.asarray(palette["metal"], dtype=float)
+    if asset_key == "plant":
+        return np.asarray(palette.get("wood", [0.42, 0.32, 0.22]), dtype=float)
     return None
 
 
-def _coordinate_material(source_color, target_color):
-    """Tint a component to the room palette while retaining material contrast."""
+def _coordinate_material(source_color, target_color, professional=False):
+    """Coordinate authored materials without erasing their texture detail."""
     if target_color is None:
         return source_color
-    brightness = float(np.mean(source_color))
-    if brightness > 0.88:
-        # Keep linens, porcelain and glass recognizably light.
-        weight = 0.18
-    else:
-        weight = 0.78
-    tonal_target = np.clip(target_color * (0.72 + 0.48 * brightness), 0, 1)
+    source_color = np.asarray(source_color, dtype=float)
+    brightness = np.mean(source_color, axis=-1, keepdims=True)
+    # Professional models already carry carefully authored color variation.
+    # A restrained tint keeps the user's palette visible without flattening
+    # fabric weave, wood grain, patina, or painted details.
+    weight = np.full_like(brightness, 0.18 if professional else 0.72)
+    weight = np.where(brightness > 0.88, 0.08 if professional else 0.18, weight)
+    tonal_target = np.clip(
+        np.asarray(target_color) * (0.72 + 0.48 * brightness),
+        0,
+        1,
+    )
     return np.clip(
-        np.asarray(source_color) * (1.0 - weight) + tonal_target * weight,
+        source_color * (1.0 - weight) + tonal_target * weight,
         0,
         1,
     )
@@ -178,7 +234,7 @@ def catalog_status() -> tuple[bool, str]:
     missing = sorted(name for name in required if not (CATALOG_ROOT / name).is_file())
     if missing:
         return False, "Local 3D catalog is missing: " + ", ".join(missing)
-    return True, "Local editable 3D furniture catalog is ready."
+    return True, "Professional local editable 3D catalog is ready."
 
 
 def load_catalog_asset(
@@ -231,15 +287,27 @@ def load_catalog_asset(
             (-source_vertices[:, 0], source_vertices[:, 2], source_vertices[:, 1])
         )
         color_visual = source.visual.to_color()
-        main_color = np.asarray(
+        vertex_colors = np.asarray(
             getattr(color_visual, "vertex_colors", [184, 184, 184, 255]),
             dtype=float,
-        ).reshape(-1)[:3]
-        if main_color.max(initial=0.0) > 1.0:
-            main_color /= 255.0
-        main_color = _coordinate_material(main_color, material_target)
+        )
+        if vertex_colors.ndim == 1:
+            vertex_colors = vertex_colors.reshape(1, -1)
+        vertex_colors = vertex_colors[:, :3]
+        if vertex_colors.max(initial=0.0) > 1.0:
+            vertex_colors /= 255.0
+        if len(vertex_colors) != len(source_vertices):
+            average = np.mean(vertex_colors, axis=0, keepdims=True)
+            vertex_colors = np.repeat(
+                average, len(source_vertices), axis=0
+            )
+        vertex_colors = _coordinate_material(
+            vertex_colors,
+            material_target,
+            professional=PRO_ROOT in path.parents,
+        )
         component_data.append(
-            (vertices, np.asarray(source.faces, dtype=np.int32), main_color)
+            (vertices, np.asarray(source.faces, dtype=np.int32), vertex_colors)
         )
     if not component_data:
         return None
@@ -255,14 +323,16 @@ def load_catalog_asset(
     scale = target_extents / np.maximum(source_extents, 1e-6)
     center_xy = target_extents[:2] / 2
     meshes = []
-    for vertices, faces, color in component_data:
+    for vertices, faces, colors in component_data:
         normalized = (vertices - source_min) * scale
         normalized[:, 0] -= center_xy[0]
         normalized[:, 1] -= center_xy[1]
         mesh = o3d.geometry.TriangleMesh()
         mesh.vertices = o3d.utility.Vector3dVector(normalized)
         mesh.triangles = o3d.utility.Vector3iVector(faces)
-        mesh.paint_uniform_color(np.clip(color, 0, 1))
+        mesh.vertex_colors = o3d.utility.Vector3dVector(
+            np.clip(colors, 0, 1)
+        )
         mesh.compute_vertex_normals()
         _shade_materials(mesh)
         meshes.append(mesh)

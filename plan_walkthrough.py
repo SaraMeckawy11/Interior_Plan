@@ -440,6 +440,22 @@ def _sph(r, color, cx=0.0, cy=0.0, z=0.0):
     return _paint(m, color)
 
 
+def _rounded_cuboid(w, d, h, color, cx=0.0, cy=0.0, z=0.0,
+                    roundness=0.24, resolution=22):
+    """Smooth superellipsoid component used for upholstered furnishings."""
+    mesh = o3d.geometry.TriangleMesh.create_sphere(
+        radius=1.0, resolution=resolution
+    )
+    vertices = np.asarray(mesh.vertices)
+    shaped = np.sign(vertices) * np.power(
+        np.abs(vertices), roundness
+    )
+    shaped *= np.array([w / 2, d / 2, h / 2])
+    shaped += np.array([cx, cy, z + h / 2])
+    mesh.vertices = o3d.utility.Vector3dVector(shaped)
+    return _paint(mesh, color)
+
+
 def _shade(base, k):
     """Lighten/darken a color."""
     return [min(1.0, c * k) for c in base]
@@ -559,15 +575,54 @@ def build_tv_unit(P, w=1.7, d=0.42):
 
 
 def build_bed(P, w=1.8, d=2.15):
+    """Detailed contemporary upholstered bed built from smooth 3D components."""
+    fabric = _mix_color(P["sofa"], P["wall"], 0.18)
+    linen = _mix_color(WHITE_SOFT, P["cushion"], 0.18)
     ms = [
-        _bx(w, 0.10, 1.15, P["sofa"], cy=-(d / 2 - 0.05)),          # headboard
-        _bx(w - 0.06, d - 0.22, 0.30, P["wood_dark"], cy=0.05),     # frame
-        _bx(w - 0.14, d - 0.34, 0.24, WHITE_SOFT, cy=0.05, z=0.30),  # mattress
-        _bx(w - 0.10, 1.15, 0.13, P["cushion"], cy=(d / 2 - 0.75), z=0.50),  # duvet
+        _rounded_cuboid(
+            w - 0.04, d - 0.12, 0.26, P["wood_dark"],
+            cy=0.04, z=0.10, roundness=0.18,
+        ),
+        _rounded_cuboid(
+            w, 0.18, 1.02, fabric,
+            cy=-(d / 2 - 0.09), z=0.12, roundness=0.20,
+        ),
+        _rounded_cuboid(
+            w - 0.12, d - 0.28, 0.28, linen,
+            cy=0.04, z=0.34, roundness=0.20,
+        ),
+        _rounded_cuboid(
+            w - 0.08, d * 0.59, 0.16, P["cushion"],
+            cy=d * 0.17, z=0.57, roundness=0.26,
+        ),
     ]
     for sx in (-1, 1):
-        ms.append(_bx(0.62, 0.38, 0.16, WHITE_SOFT,
-                      cx=sx * (w / 4 - 0.02), cy=-(d / 2 - 0.35), z=0.56))   # pillows
+        ms.append(_rounded_cuboid(
+            0.66, 0.40, 0.20, linen,
+            cx=sx * (w / 4 - 0.02),
+            cy=-(d / 2 - 0.37),
+            z=0.59,
+            roundness=0.30,
+        ))
+    ms.append(_rounded_cuboid(
+        0.72, 0.22, 0.18, _shade(P["cushion"], 0.88),
+        cy=-(d / 2 - 0.52), z=0.70, roundness=0.32,
+    ))
+    # Tufted headboard buttons and slim feet make this read as an authored
+    # furniture component rather than a set of primitive boxes.
+    for x in np.linspace(-w * 0.35, w * 0.35, 5):
+        for button_z in (0.48, 0.76, 1.00):
+            ms.append(_sph(
+                0.026, _shade(fabric, 0.68),
+                cx=float(x), cy=-(d / 2 - 0.19), z=button_z,
+            ))
+    for sx in (-1, 1):
+        for sy in (-1, 1):
+            ms.append(_cyl(
+                0.035, 0.11, P["metal"],
+                cx=sx * (w / 2 - 0.10),
+                cy=sy * (d / 2 - 0.13),
+            ))
     return ms, w, d
 
 
@@ -733,8 +788,108 @@ def build_shower(P, w=0.95, d=0.95):
     ], w, d
 
 
+def build_bathtub(P, w=1.65, d=0.78):
+    """Freestanding bath fallback with a real hollow rim and metal fittings."""
+    shell = _mix_color(WHITE_SOFT, P["wall"], 0.10)
+    inner = _shade(shell, 0.92)
+    rim = 0.09
+    ms = [
+        _bx(w - 0.12, d - 0.12, 0.16, inner, z=0.10),
+        _bx(w, rim, 0.48, shell, cy=-(d / 2 - rim / 2), z=0.10),
+        _bx(w, rim, 0.48, shell, cy=(d / 2 - rim / 2), z=0.10),
+        _bx(rim, d - rim * 2, 0.48, shell,
+            cx=-(w / 2 - rim / 2), z=0.10),
+        _bx(rim, d - rim * 2, 0.48, shell,
+            cx=(w / 2 - rim / 2), z=0.10),
+        _cyl(0.018, 0.34, P["metal"], cx=w * 0.32,
+             cy=-(d / 2 - 0.02), z=0.50),
+        _cyl(0.045, 0.055, P["metal"], cx=w * 0.32,
+             cy=-(d / 2 - 0.02), z=0.80),
+    ]
+    return ms, w, d
+
+
+def _professional_detail(asset_key, P, w, d, h, z=0.0):
+    """Load a local production-authored detail, retaining material colors."""
+    try:
+        from furniture_catalog import load_catalog_asset
+
+        meshes = load_catalog_asset(
+            asset_key,
+            "Modern",
+            w,
+            d,
+            height=h,
+            palette=P,
+        )
+        if not meshes:
+            return None
+        if z:
+            for mesh in meshes:
+                mesh.translate((0.0, 0.0, z))
+        return meshes
+    except Exception as exc:
+        print(f"[WALK] Professional detail '{asset_key}' unavailable: {exc}")
+        return None
+
+
+def _textured_art_canvas(w, h, z0):
+    """Tessellate the generated artwork so its full texture survives Open3D."""
+    try:
+        from PIL import Image
+
+        path = os.path.join(
+            os.path.dirname(__file__),
+            "assets",
+            "furniture_catalog",
+            "pro",
+            "custom_wall_art",
+            "abstract_earth_sage.png",
+        )
+        image = Image.open(path).convert("RGB").resize(
+            (40, 40), Image.Resampling.LANCZOS
+        )
+        pixels = np.asarray(image, dtype=float) / 255.0
+        rows, cols = pixels.shape[:2]
+        canvas_w, canvas_h = w * 0.86, h * 0.82
+        vertices = []
+        colors = []
+        for row in range(rows):
+            z = z0 + h * 0.09 + canvas_h * row / (rows - 1)
+            for col in range(cols):
+                x = -canvas_w / 2 + canvas_w * col / (cols - 1)
+                vertices.append((x, 0.056, z))
+                colors.append(pixels[rows - 1 - row, col])
+        faces = []
+        for row in range(rows - 1):
+            for col in range(cols - 1):
+                a = row * cols + col
+                b = a + 1
+                c = a + cols
+                d = c + 1
+                faces.extend(((a, c, b), (b, c, d)))
+        mesh = o3d.geometry.TriangleMesh()
+        mesh.vertices = o3d.utility.Vector3dVector(
+            np.asarray(vertices, dtype=float)
+        )
+        mesh.triangles = o3d.utility.Vector3iVector(
+            np.asarray(faces, dtype=np.int32)
+        )
+        mesh.vertex_colors = o3d.utility.Vector3dVector(
+            np.asarray(colors, dtype=float)
+        )
+        mesh.compute_vertex_normals()
+        return mesh
+    except Exception as exc:
+        print(f"[WALK] Generated wall-art canvas unavailable: {exc}")
+        return None
+
+
 def build_plant(P, tall=True):
     h = 1.35 if tall else 0.8
+    professional = _professional_detail("plant", P, 0.55, 0.55, h)
+    if professional:
+        return professional, 0.55, 0.55
     ms = [
         _cyl(0.16, 0.34, TERRACOTTA),
         _cyl(0.028, h - 0.5, P["wood_dark"], z=0.34),
@@ -755,7 +910,13 @@ def build_floor_lamp(P):
 
 
 def build_art(P, w=1.25, h=0.85, z0=1.25):
-    """Wall art — hangs at z0, thin footprint, meant to be placed at a wall."""
+    """Textured framed wall art with a modeled procedural fallback."""
+    professional = _professional_detail("wall_art", P, w, 0.10, h, z=z0)
+    if professional:
+        canvas = _textured_art_canvas(w, h, z0)
+        if canvas is not None:
+            professional.append(canvas)
+        return professional, w, 0.10
     return [
         _bx(w, 0.05, h, P["wood_dark"], z=z0),
         _bx(w - 0.08, 0.052, h - 0.08, _shade(P["wall"], 1.03), z=z0 + 0.04),
@@ -818,7 +979,12 @@ def build_bench(P, w=1.15, d=0.42):
 
 
 def build_round_mirror(P, diameter=0.88, z=1.55):
-    """Round framed mirror, oriented against a local-frame wall."""
+    """Modeled ornate mirror with a round procedural fallback."""
+    professional = _professional_detail(
+        "wall_mirror", P, diameter, 0.10, diameter, z=z
+    )
+    if professional:
+        return professional, diameter, 0.10
     frame = o3d.geometry.TriangleMesh.create_cylinder(
         radius=diameter / 2, height=0.035, resolution=40
     )
@@ -840,6 +1006,31 @@ def build_round_mirror(P, diameter=0.88, z=1.55):
     return [frame, glass], diameter, 0.07
 
 
+def build_wall_clock(P, diameter=0.56, z=1.58):
+    """Production-authored wall clock with readable modeled depth."""
+    professional = _professional_detail(
+        "wall_clock", P, diameter, 0.12, diameter, z=z
+    )
+    if professional:
+        return professional, diameter, 0.12
+    return build_round_mirror(P, diameter=diameter, z=z)
+
+
+def build_wall_sconce(P, w=0.26, d=0.20, h=0.46, z=1.30):
+    """Modeled wall sconce; fallback has a projecting shade and stem."""
+    professional = _professional_detail(
+        "wall_sconce", P, w, d, h, z=z
+    )
+    if professional:
+        return professional, w, d
+    return [
+        _cyl(0.10, 0.035, P["metal"], z=z + h * 0.42),
+        _cyl(0.018, d * 0.75, P["metal"], cy=d * 0.15,
+             z=z + h * 0.46),
+        _cyl(0.12, h * 0.42, P["shade"], cy=d * 0.35, z=z),
+    ], w, d
+
+
 def build_towel_rail(P, w=0.68, z=1.05):
     """Wall-mounted towel rail with folded fabric."""
     return [
@@ -850,6 +1041,11 @@ def build_towel_rail(P, w=0.68, z=1.05):
 
 
 def build_pendant(P, ceiling_h=WALL_H, drop=0.6):
+    professional = _professional_detail(
+        "ceiling_light", P, 0.55, 0.55, 0.42, z=ceiling_h - 0.42
+    )
+    if professional:
+        return professional, 0.55, 0.55
     return [
         _cyl(0.012, drop - 0.14, P["metal"], z=ceiling_h - drop + 0.14),
         _cyl(0.19, 0.14, P["shade"], z=ceiling_h - drop),
@@ -1351,26 +1547,23 @@ def build_room_design_surfaces(room_m, edges, P, config):
                 if rail:
                     meshes.append(rail)
 
-        # Balanced wall sconces add a warm architectural layer around the
-        # focal wall without depending on realtime lighting support.
+        # Balanced, production-authored wall sconces add genuine projecting
+        # geometry and materials around the focal wall.
         if profile != "airy" and width >= 2.0:
             for offset in (-width * 0.34, width * 0.34):
                 center = middle + direction * offset
-                sa = center - direction * 0.065
-                sb = center + direction * 0.065
-                backplate = _wall_strip(
-                    sa, sb, 1.30, 1.66, 0.055, P["metal"],
-                    inward, WALL_THICKNESS / 2 + 0.065,
+                sconce = build_wall_sconce(P)
+                sconce_pos = (
+                    center
+                    + inward * (
+                        WALL_THICKNESS / 2 + sconce[2] / 2 + 0.025
+                    )
                 )
-                glow = _wall_strip(
-                    sa + direction * 0.018, sb - direction * 0.018,
-                    1.36, 1.60, 0.065, _shade(P["shade"], 1.08),
-                    inward, WALL_THICKNESS / 2 + 0.095,
-                )
-                if backplate:
-                    meshes.append(backplate)
-                if glow:
-                    meshes.append(glow)
+                meshes.extend(place_meshes(
+                    list(sconce[0]),
+                    sconce_pos,
+                    yaw_facing(inward),
+                ))
 
     # A shallow inset ceiling creates a deliberate cove instead of a bare lid.
     inner = poly.buffer(-0.28)
@@ -1442,6 +1635,7 @@ EDITABLE_FURNITURE_ASSETS = {
     "vanity",
     "toilet",
     "shower",
+    "bathtub",
 }
 
 
@@ -1462,7 +1656,7 @@ def _tripo_material_color(asset_key, palette):
         return _mix_color([0.70, 0.72, 0.74], palette["metal"], 0.18)
     if asset_key == "toilet":
         return [0.94, 0.94, 0.92]
-    if asset_key == "shower":
+    if asset_key in {"shower", "bathtub"}:
         return _mix_color([0.70, 0.82, 0.87], palette["metal"], 0.12)
     return palette["table"]
 
@@ -1489,7 +1683,9 @@ def _furniture_accessories(asset_key, procedural_meshes):
             if index > 0 and (index - 1) % 5 != 0
         ]
     if asset_key == "vanity":
-        return procedural_meshes[3:]
+        # Keep the faucet, but replace the flat procedural mirror with the
+        # professional modeled wall-mirror asset in the bathroom recipe.
+        return procedural_meshes[3:4]
     return []
 
 
@@ -1585,12 +1781,26 @@ class RoomFurnisher:
                 if use_catalog:
                     from furniture_catalog import load_catalog_asset
 
-                    generated = load_catalog_asset(
-                        asset_key,
-                        self.config.get("style", "Modern"),
-                        width,
-                        mesh_depth,
-                        palette=P,
+                    style_name = self.config.get("style", "Modern")
+                    use_designer_bed = (
+                        asset_key == "bed"
+                        and not any(
+                            word in str(style_name).lower()
+                            for word in (
+                                "classic", "traditional", "bohemian", "boho"
+                            )
+                        )
+                    )
+                    generated = (
+                        None
+                        if use_designer_bed
+                        else load_catalog_asset(
+                            asset_key,
+                            style_name,
+                            width,
+                            mesh_depth,
+                            palette=P,
+                        )
                     )
                 else:
                     from local_3d_ai import load_asset_mesh, preference_key
@@ -1612,11 +1822,27 @@ class RoomFurnisher:
                     )
                     if use_catalog:
                         for mesh in generated:
-                            self._editable_mesh_assets[id(mesh)] = asset_key
+                            # Retain the object reference as well as its id.
+                            # Failed placement attempts can otherwise release a
+                            # mesh and let Python reuse its id for unrelated
+                            # décor, incorrectly making that décor editable.
+                            self._editable_mesh_assets[id(mesh)] = (
+                                mesh,
+                                asset_key,
+                            )
                     return generated, width, depth
             except Exception as exc:
                 engine = "catalog" if use_catalog else "TripoSR"
                 print(f"[WALK] {engine} asset '{asset_key}' unavailable: {exc}")
+            if use_catalog:
+                # Procedural fallbacks are still genuine transformable 3D
+                # components. Keep them editable when a style-specific catalog
+                # model is deliberately avoided or cannot be loaded.
+                for mesh in procedural_meshes:
+                    self._editable_mesh_assets[id(mesh)] = (
+                        mesh,
+                        asset_key,
+                    )
             return procedural
 
         return build_with_local_asset
@@ -1789,9 +2015,12 @@ class RoomFurnisher:
         self.meshes.extend(place_meshes(meshes, pos, yaw))
         asset_key = next(
             (
-                self._editable_mesh_assets[id(mesh)]
+                self._editable_mesh_assets[id(mesh)][1]
                 for mesh in meshes
-                if id(mesh) in self._editable_mesh_assets
+                if (
+                    id(mesh) in self._editable_mesh_assets
+                    and self._editable_mesh_assets[id(mesh)][0] is mesh
+                )
             ),
             None,
         )
@@ -1850,10 +2079,14 @@ class RoomFurnisher:
         self.meshes.extend(place_meshes(list(build_pendant(self.P)[0]), p, 0.0))
 
     def art_on(self, slot_info, w=1.25):
-        """Art on the wall behind an already placed item (no collision checks)."""
+        """Place a real modeled wall object behind an anchored furnishing."""
         s = slot_info["slot"]
         pos = np.array(slot_info["pos"]) - slot_info["n"] * (slot_info["d"] / 2 + 0.01)
-        built = build_art(self.P, w=w)
+        room_type = str(self.config.get("room_type", "")).lower()
+        if "office" in room_type:
+            built = build_wall_clock(self.P, diameter=min(w, 0.62))
+        else:
+            built = build_art(self.P, w=w)
         self.add(built, pos, slot_info["yaw"], block=False, check=False)
 
     def feature_on(self, slot_info, w=None):
@@ -2054,23 +2287,91 @@ class RoomFurnisher:
         vanity_builder = self.furniture_builder("vanity", build_vanity)
         toilet_builder = self.furniture_builder("toilet", build_toilet)
         shower_builder = self.furniture_builder("shower", build_shower)
-        v = self.against_wall(vanity_builder)
+        bathtub_builder = self.furniture_builder("bathtub", build_bathtub)
+
+        # Reserve the wet zone first. Previously it was attempted after the
+        # vanity and toilet, so an ordinary collision silently removed it.
+        wet_fixture = None
+        for size in (0.95, 0.78):
+            built = shower_builder(self.P, w=size, d=size)
+            _meshes, width, depth = built
+            corner_offset = math.hypot(width / 2, depth / 2) + 0.08
+            corners = sorted(
+                (np.asarray(v, dtype=float) for v in self.room_m),
+                key=lambda v: -np.linalg.norm(self.centroid - v),
+            )
+            for corner in corners:
+                inward = self.centroid - corner
+                distance = np.linalg.norm(inward)
+                if distance < 1e-6:
+                    continue
+                inward /= distance
+                pos = corner + inward * corner_offset
+                for yaw in (
+                    0.0,
+                    math.pi / 2,
+                    yaw_facing(inward),
+                ):
+                    if self.add(built, pos, yaw):
+                        wet_fixture = "shower"
+                        break
+                if wet_fixture:
+                    break
+            if wet_fixture:
+                break
+
+        # Long narrow bathrooms often fit a bath more naturally than a square
+        # shower. Try both full and compact baths before using the final safe
+        # compact-shower guarantee.
+        if not wet_fixture:
+            for width, depth in ((1.65, 0.78), (1.35, 0.70)):
+                placed = self.against_wall(
+                    bathtub_builder, w=width, d=depth
+                )
+                if placed:
+                    wet_fixture = "bathtub"
+                    break
+
+        if not wet_fixture:
+            compact = shower_builder(self.P, w=0.72, d=0.72)
+            point = self.poly.representative_point()
+            pos = np.array([point.x, point.y])
+            if not self.add(
+                compact, pos, 0.0, avoid_doors=False
+            ):
+                # A malformed or impossibly tiny bathroom still receives the
+                # required fixture visibly instead of failing silently.
+                self.add(
+                    compact, pos, 0.0, avoid_doors=False, check=False
+                )
+            wet_fixture = "compact shower"
+            print("[WALK] Bathroom used the compact shower fallback.")
+
+        v = (
+            self.against_wall(vanity_builder)
+            or self.against_wall(vanity_builder, w=0.76, d=0.46)
+        )
+        if v:
+            mirror_pos = (
+                np.asarray(v["pos"])
+                - v["n"] * (v["d"] / 2 + 0.01)
+            )
+            self.add(
+                build_round_mirror(self.P, diameter=min(0.82, v["w"] * 0.82),
+                                   z=1.16),
+                mirror_pos,
+                v["yaw"],
+                block=False,
+                check=False,
+            )
         slots = self.wall_slots()
         if v:
             slots = [s for s in slots
                      if not np.allclose(s["mid"], v["slot"]["mid"])] or slots
-        self.against_wall(toilet_builder, slots=slots)
+        self.against_wall(toilet_builder, slots=slots) or self.against_wall(
+            toilet_builder, slots=slots, w=0.38, d=0.58
+        )
         self.against_wall(build_towel_rail, slots=slots, block=False)
-        # shower in the deepest corner
-        for vx in self.room_m:
-            vx = np.array(vx)
-            to_c = self.centroid - vx
-            L = np.linalg.norm(to_c)
-            if L < 1.0:
-                continue
-            pos = vx + to_c / L * 0.75
-            if self.add(shower_builder(self.P), pos, 0.0):
-                break
         if self.wants_rugs:
             self.add(
                 build_rug(self.P, w=0.85, d=0.55),
@@ -2623,9 +2924,20 @@ def _demo_plan():
                ((760, 100), (900, 100), "normal"),      # bedroom, top wall
                ((1000, 250), (1000, 400), "normal"),    # bedroom, right wall
                ((250, 820), (430, 820), "normal")]      # kitchen, bottom wall
-    configs = [dict(room_type="Living Room", style="Modern"),
-               dict(room_type="Bedroom", style="Scandinavian"),
-               dict(room_type="Kitchen", style="Japandi")]
+    configs = [
+        dict(
+            room_type="Living Room", style="Modern", use_catalog=True,
+            whole_room_design=True, design_profile="Layered",
+        ),
+        dict(
+            room_type="Bedroom", style="Scandinavian", use_catalog=True,
+            whole_room_design=True, design_profile="Curated",
+        ),
+        dict(
+            room_type="Kitchen", style="Japandi", use_catalog=True,
+            whole_room_design=True, design_profile="Curated",
+        ),
+    ]
     return living, bedroom, kitchen, doors, windows, configs
 
 
